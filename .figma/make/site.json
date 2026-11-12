@@ -1,0 +1,11 @@
+{
+  "title": "John quiz.com | Quiz competitions",
+  "description": "Join timed quiz competitions, climb the leaderboard, and win with John quiz.com.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
