@@ -1,6 +1,6 @@
 # John quiz.com
 
-John quiz.com is a React and Vite quiz competition platform with a Node API and Supabase storage. It includes public competition pages, participant accounts, timed quizzes, leaderboards, and a separate administrator area.
+John quiz.com is a React and Vite quiz competition platform with a Node API and Supabase storage. It includes public competition pages, username-based participant accounts, timed quizzes, leaderboards, and a separate administrator area.
 
 ## Run locally
 

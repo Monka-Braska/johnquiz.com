@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 type Screen =
   | "home"
@@ -45,6 +45,15 @@ type IconName =
   | "edit"
   | "trash"
   | "play";
+
+type ThemeContextValue = { theme: "light" | "dark"; toggleTheme: () => void };
+const ThemeContext = createContext<ThemeContextValue>({ theme: "light", toggleTheme: () => {} });
+
+function ThemeToggle() {
+  const { theme, toggleTheme } = useContext(ThemeContext);
+  const dark = theme === "dark";
+  return <button className="theme-toggle" type="button" onClick={toggleTheme} aria-label={`Switch to ${dark ? "light" : "dark"} mode`} title={`Switch to ${dark ? "light" : "dark"} mode`}><span aria-hidden="true">{dark ? "☀" : "☾"}</span><b>{dark ? "Light" : "Dark"}</b></button>;
+}
 
 const paths: Record<IconName, React.ReactNode> = {
   arrow: (
@@ -204,10 +213,10 @@ async function adminFetch(input: RequestInfo | URL, init?: RequestInit) {
 let selectedEntryCode = "";
 let selectedCompetitionId = "";
 
-const participant = { id: "", name: "", email: "", phone: "", questionCount: 20, durationMinutes: 10, competitionTitle: "The Ultimate Knowledge Sprint", prize: "₵2,500", quizQuestions: [] as Array<{ id: string; q: string; opts: string[] }>, startedAt: 0, answers: {} as Record<number, number>, score: 0, elapsed: 0, submittedAt: "" };
+const participant = { id: "", name: "", username: "", phone: "", classLevel: "", questionCount: 20, durationMinutes: 10, competitionTitle: "The Ultimate Knowledge Sprint", prize: "₵2,500", quizQuestions: [] as Array<{ id: string; q: string; type?: string }>, startedAt: 0, answers: {} as Record<number, string>, score: 0, elapsed: 0, submittedAt: "" };
 
 type PublicCompetition = { id: string; title: string; description: string; questionCount: number; durationMinutes: number; maxParticipants: number; prize: string; entryCode?: string; isPublished: boolean; isLocked?: boolean; lockReason?: string; status: string; rules?: string; startAt?: string | null; endAt?: string | null; participantCount?: number };
-const defaultPublicCompetition: PublicCompetition = { id: "00000000-0000-4000-8000-000000000048", title: "The Ultimate Knowledge Sprint", description: "General knowledge · Advanced", questionCount: 20, durationMinutes: 10, maxParticipants: 1000, prize: "₵2,500", entryCode: "JQ-000048", isPublished: true, status: "Live", rules: "One correct answer per question. Highest score wins; ties are broken by fastest completion time." };
+const defaultPublicCompetition: PublicCompetition = { id: "00000000-0000-4000-8000-000000000048", title: "The Ultimate Knowledge Sprint", description: "Law students · Legal reasoning", questionCount: 20, durationMinutes: 10, maxParticipants: 1000, prize: "₵2,500", entryCode: "JQ-000048", isPublished: true, status: "Live", rules: "Answer each question in writing. Highest score wins; ties are broken by fastest completion time." };
 
 type PublicHomePayload = { competition: PublicCompetition; participants: number; submissions: number; competitions: PublicCompetition[]; settings: { platformName: string; supportEmail: string } };
 let publicHomeCache: { data: PublicHomePayload; expiresAt: number } | null = null;
@@ -341,6 +350,7 @@ function PublicHeader({ brandName, userName }: { brandName: string; userName: st
           <button onClick={() => go("register")}>Current competition</button>
           <button onClick={() => go("leaderboard")}>Leaderboard</button>
         </nav>
+        <ThemeToggle />
         {userName && <div className="public-user"><span>{participantInitials(userName)}</span><b>{userName}</b></div>}
       </div>
     </header>
@@ -349,7 +359,7 @@ function PublicHeader({ brandName, userName }: { brandName: string; userName: st
 
 function PublicShell({ children }: { children: React.ReactNode }) {
   const [settings, setSettings] = useState(() => readPublicHomeCache()?.settings || { platformName: "John quiz.com", supportEmail: "hello@johnquiz.com" });
-  const [userName] = useState(() => participant.name || sessionStorage.getItem("participantName") || "");
+  const [userName] = useState(() => participant.name || sessionStorage.getItem("participantName") || sessionStorage.getItem("userUsername") || "");
   useEffect(() => {
     fetchPublicHome()
       .then((data) => setSettings(data.settings)).catch(() => {});
@@ -389,7 +399,7 @@ function Home() {
   const enterEvent = (code: string) => { selectedEntryCode = code; go("register"); };
   return (
     <PublicShell>
-      <main>
+      <main className="home-page-backdrop">
         <section className="hero active-event-hero">
           <div className="hero-copy active-event-copy">
             <span className="eyebrow">
@@ -567,11 +577,12 @@ function PageIntro({ step, title, copy }: { step?: string; title: string; copy: 
 function Registration() {
   const [accountMode, setAccountMode] = useState<"signup" | "login">("signup");
   const [accountReady, setAccountReady] = useState(() => Boolean(sessionStorage.getItem("userToken")));
-  const [accountEmail, setAccountEmail] = useState(() => sessionStorage.getItem("userEmail") || "");
+  const [accountUsername, setAccountUsername] = useState(() => sessionStorage.getItem("userUsername") || "");
   const [password, setPassword] = useState("");
   const [consent, setConsent] = useState(false);
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
+  const [name, setName] = useState(() => sessionStorage.getItem("participantName") || "");
+  const [phone, setPhone] = useState(() => sessionStorage.getItem("userPhone") || "");
+  const [classLevel, setClassLevel] = useState(() => sessionStorage.getItem("userClassLevel") || "");
   const [entryCode, setEntryCode] = useState(selectedEntryCode);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -582,18 +593,32 @@ function Registration() {
     if (!token) return;
     fetch("/api/account/me", { headers: { Authorization: `Bearer ${token}` } })
       .then((response) => response.ok ? response.json() : Promise.reject())
-      .then((data) => { setAccountEmail(data.account.email); setAccountReady(true); })
-      .catch(() => { sessionStorage.removeItem("userToken"); sessionStorage.removeItem("userEmail"); setAccountReady(false); });
+      .then((data) => {
+        setAccountUsername(data.account.username);
+        setPhone(data.account.phone || "");
+        setClassLevel(data.account.classLevel || "");
+        setAccountReady(true);
+      })
+      .catch(() => { sessionStorage.removeItem("userToken"); sessionStorage.removeItem("userUsername"); sessionStorage.removeItem("userEmail"); setAccountReady(false); });
   }, []);
   async function authenticate(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError("");
     try {
-      const response = await fetch(`/api/account/${accountMode}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: accountEmail, password }) });
+      const response = await fetch(`/api/account/${accountMode}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: accountUsername, password, phone, classLevel }),
+      });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Could not sign in.");
       sessionStorage.setItem("userToken", result.token);
-      sessionStorage.setItem("userEmail", result.account.email);
-      setAccountEmail(result.account.email); setPassword(""); setAccountReady(true);
+      sessionStorage.setItem("userUsername", result.account.username);
+      sessionStorage.setItem("userPhone", result.account.phone || "");
+      sessionStorage.setItem("userClassLevel", result.account.classLevel || "");
+      setAccountUsername(result.account.username);
+      setPhone(result.account.phone || "");
+      setClassLevel(result.account.classLevel || "");
+      setPassword(""); setAccountReady(true);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not reach the server."); }
     finally { setBusy(false); }
   }
@@ -603,18 +628,21 @@ function Registration() {
       const response = await fetch("/api/participants", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionStorage.getItem("userToken") || ""}` },
-        body: JSON.stringify({ name: name.trim(), phone: phone.trim(), entryCode: entryCode.trim() }),
+        body: JSON.stringify({ name: name.trim(), phone: phone.trim(), classLevel: classLevel.trim(), entryCode: entryCode.trim() }),
       });
       const result = await response.json();
       if (!response.ok) {
-        if (response.status === 401) { sessionStorage.removeItem("userToken"); sessionStorage.removeItem("userEmail"); setAccountReady(false); }
+        if (response.status === 401) { sessionStorage.removeItem("userToken"); sessionStorage.removeItem("userUsername"); sessionStorage.removeItem("userEmail"); setAccountReady(false); }
         throw new Error(result.error || "Registration failed.");
       }
       participant.id = result.participant.id;
       participant.name = result.participant.name;
+      participant.username = accountUsername;
       sessionStorage.setItem("participantName", participant.name);
-      participant.email = accountEmail;
       participant.phone = phone;
+      participant.classLevel = classLevel;
+      sessionStorage.setItem("userPhone", phone);
+      sessionStorage.setItem("userClassLevel", classLevel);
       participant.questionCount = result.competition?.questionCount || 20;
       participant.quizQuestions = result.questions || [];
       participant.durationMinutes = result.competition?.durationMinutes || 10;
@@ -631,35 +659,41 @@ function Registration() {
         <div className="form-layout">
           <div>
             <PageIntro
-              step="SECURE QUIZ ONBOARDING"
-              title={accountReady ? "Finish setting up your entry." : accountMode === "signup" ? "Create your quiz account." : "Welcome back."}
-              copy={accountReady ? "Add your participant details and event code before starting the quiz." : "Sign up or sign in with your email and password before entering a competition."}
+              step="PLAYER ACCOUNT"
+              title={accountReady ? "Finish your competition entry." : accountMode === "signup" ? "Create your player account." : "Welcome back."}
+              copy={accountReady ? "Confirm your player details and event code before starting the quiz." : "Create an account with a username, password, phone number and class or level."}
             />
             <div className="info-callout">
               <Icon name="shield" />
               <div>
-                <b>Your details stay protected</b>
-                <p>Your password is stored as a secure hash. Only your first name and last initial appear on the leaderboard.</p>
+                <b>Simple player sign-in</b>
+                <p>Use your username and password to sign in. Your phone number and class or level are saved with your participant record.</p>
               </div>
             </div>
           </div>
           {!accountReady ? <form className="surface form-card account-form" onSubmit={authenticate}>
             <div className="account-tabs"><button type="button" className={accountMode === "signup" ? "active" : ""} onClick={() => { setAccountMode("signup"); setError(""); }}>Create account</button><button type="button" className={accountMode === "login" ? "active" : ""} onClick={() => { setAccountMode("login"); setError(""); }}>Sign in</button></div>
-            <div className="form-title"><span className="form-icon"><Icon name="users" /></span><div><h2>{accountMode === "signup" ? "Your account" : "Sign in to your account"}</h2><p>{accountMode === "signup" ? "Use at least 8 characters for your password." : "Continue with your existing quiz account."}</p></div></div>
-            <label>Email address *<input required type="email" autoComplete="email" value={accountEmail} onChange={(event) => setAccountEmail(event.target.value)} placeholder="you@example.com" /></label>
+            <div className="form-title"><span className="form-icon"><Icon name="users" /></span><div><h2>{accountMode === "signup" ? "Your player account" : "Sign in to your account"}</h2><p>{accountMode === "signup" ? "Choose a username and add your contact details." : "Continue with your username and password."}</p></div></div>
+            <label>Username *<input required minLength={3} maxLength={24} pattern="[A-Za-z0-9_.-]{3,24}" autoComplete="username" value={accountUsername} onChange={(event) => setAccountUsername(event.target.value)} placeholder="e.g. jordan_24" /></label>
             <label>Password *<input required minLength={accountMode === "signup" ? 8 : undefined} type="password" autoComplete={accountMode === "signup" ? "new-password" : "current-password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder={accountMode === "signup" ? "At least 8 characters" : "Your password"} /></label>
+            {accountMode === "signup" && <>
+              <label>Phone number *<input required type="tel" autoComplete="tel" minLength={7} value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+233 20 000 0000" /></label>
+              <label>Class or level *<input required minLength={2} maxLength={60} value={classLevel} onChange={(event) => setClassLevel(event.target.value)} placeholder="e.g. JHS 2 or Level 100" /></label>
+            </>}
             {error && <p className="form-error">{error}</p>}
             <Button type="submit" icon="arrow" disabled={busy}>{busy ? "Please wait…" : accountMode === "signup" ? "Create account and continue" : "Sign in and continue"}</Button>
             <small className="secure-note"><Icon name="shield" size={14} /> Your password is never displayed or stored in plain text.</small>
           </form> : <form className="surface form-card account-form" onSubmit={registerParticipant}>
-            <div className="form-title"><span className="form-icon"><Icon name="users" /></span><div><h2>Participant details</h2><p>Signed in as {accountEmail}</p></div></div>
+            <div className="form-title"><span className="form-icon"><Icon name="users" /></span><div><h2>Participant details</h2><p>Signed in as @{accountUsername}</p></div></div>
+            <div className="participant-profile-summary"><span>PLAYER PROFILE</span><b>@{accountUsername}</b><p>{phone || "Phone not set"} · {classLevel || "Class or level not set"}</p></div>
             <label>Full name *<input required minLength={2} autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Jordan Williams" /></label>
-            <label>Contact phone number *<input required type="tel" autoComplete="tel" minLength={7} value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+233 20 000 0000" /><small className="field-hint">Required so we can contact you about your competition entry.</small></label>
+            <label>Contact phone number *<input required type="tel" autoComplete="tel" minLength={7} value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+233 20 000 0000" /><small className="field-hint">Saved to your player profile and visible to the administrator.</small></label>
+            <label>Class or level *<input required minLength={2} maxLength={60} value={classLevel} onChange={(event) => setClassLevel(event.target.value)} placeholder="e.g. JHS 2 or Level 100" /></label>
             <label>Competition entry code *<input required value={entryCode} onChange={(event) => setEntryCode(event.target.value.toUpperCase())} placeholder="JQ-A1B2C3" /></label>
             <label className="checkbox"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /><span>I agree to the <u>competition rules</u> and consent to my score and abbreviated name appearing on the public leaderboard.</span></label>
             {error && <p className="form-error">{error}</p>}
-            <Button type="submit" icon="arrow" disabled={busy || !name || !phone || !consent}>{busy ? "Saving entry…" : "Continue to instructions"}</Button>
-            <button className="account-switch" type="button" onClick={() => { sessionStorage.removeItem("userToken"); sessionStorage.removeItem("userEmail"); sessionStorage.removeItem("participantName"); setAccountReady(false); setError(""); }}>Sign out of this account</button>
+            <Button type="submit" icon="arrow" disabled={busy || !name || !phone || !classLevel || !consent}>{busy ? "Saving entry…" : "Continue to instructions"}</Button>
+            <button className="account-switch" type="button" onClick={() => { sessionStorage.removeItem("userToken"); sessionStorage.removeItem("userUsername"); sessionStorage.removeItem("userPhone"); sessionStorage.removeItem("userClassLevel"); sessionStorage.removeItem("participantName"); setAccountReady(false); setError(""); }}>Sign out of this account</button>
             <small className="secure-note"><Icon name="shield" size={14} /> Protected by encrypted submission and server-verified timing</small>
           </form>}
         </div>
@@ -756,50 +790,31 @@ function Instructions() {
   );
 }
 
-const questions = [
-  {
-    q: "Which element has the chemical symbol “Au”?",
-    opts: ["Silver", "Gold", "Argon", "Aluminium"],
-    answer: 1,
-  },
-  {
-    q: "Which planet has the shortest day in our solar system?",
-    opts: ["Mars", "Jupiter", "Venus", "Mercury"],
-    answer: 1,
-  },
-  {
-    q: "Who wrote the novel “Things Fall Apart”?",
-    opts: ["Wole Soyinka", "Chinua Achebe", "Ngũgĩ wa Thiong’o", "Ben Okri"],
-    answer: 1,
-  },
-  {
-    q: "What is the capital city of Canada?",
-    opts: ["Toronto", "Vancouver", "Ottawa", "Montreal"],
-    answer: 2,
-  },
-  {
-    q: "Which ocean is the largest by surface area?",
-    opts: ["Atlantic", "Indian", "Arctic", "Pacific"],
-    answer: 3,
-  },
-  { q: "What is the largest mammal on Earth?", opts: ["African elephant", "Blue whale", "Giraffe", "Orca"], answer: 1 },
-  { q: "Which country is home to the ancient city of Petra?", opts: ["Egypt", "Jordan", "Greece", "Morocco"], answer: 1 },
-  { q: "What is the square root of 144?", opts: ["10", "11", "12", "14"], answer: 2 },
-  { q: "Which gas do plants absorb from the atmosphere?", opts: ["Oxygen", "Nitrogen", "Carbon dioxide", "Hydrogen"], answer: 2 },
-  { q: "In which year did Ghana gain independence?", opts: ["1952", "1957", "1960", "1963"], answer: 1 },
-  { q: "What is the hardest naturally occurring substance?", opts: ["Quartz", "Diamond", "Granite", "Iron"], answer: 1 },
-  { q: "Which instrument measures atmospheric pressure?", opts: ["Thermometer", "Barometer", "Hygrometer", "Anemometer"], answer: 1 },
-  { q: "How many sides does a hexagon have?", opts: ["Five", "Six", "Seven", "Eight"], answer: 1 },
-  { q: "Which artist painted the Mona Lisa?", opts: ["Michelangelo", "Leonardo da Vinci", "Raphael", "Caravaggio"], answer: 1 },
-  { q: "What is the smallest prime number?", opts: ["0", "1", "2", "3"], answer: 2 },
-  { q: "Which organ pumps blood around the human body?", opts: ["Liver", "Lungs", "Heart", "Kidney"], answer: 2 },
-  { q: "What is the official language of Brazil?", opts: ["Spanish", "Portuguese", "French", "English"], answer: 1 },
-  { q: "Which is the nearest star to Earth?", opts: ["Sirius", "Proxima Centauri", "The Sun", "Alpha Centauri A"], answer: 2 },
-  { q: "What is the chemical symbol for iron?", opts: ["Ir", "Fe", "In", "I"], answer: 1 },
-  { q: "Which continent contains the Sahara Desert?", opts: ["Asia", "Africa", "South America", "Australia"], answer: 1 },
+const lawFallbackQuestions = [
+  { q: "What is the supreme law of Ghana?" },
+  { q: "What standard of proof generally applies in Ghanaian civil cases?" },
+  { q: "What standard of proof applies to criminal guilt?" },
+  { q: "What is the principle that requires courts to follow binding earlier decisions?" },
+  { q: "What is the binding legal reason for a court’s decision called?" },
+  { q: "What is a judge’s non-binding observation outside the core reasoning called?" },
+  { q: "What writ requires a detained person to be brought before a court?" },
+  { q: "What is the presumption that an accused person is not guilty until proven otherwise?" },
+  { q: "What is a civil wrong, apart from breach of contract, called?" },
+  { q: "What is the legal term for a person who brings a civil claim?" },
+  { q: "What is the legal term for the party against whom a civil claim is brought?" },
+  { q: "What is a formal promise enforceable by law between parties called?" },
+  { q: "What is the intentional or reckless creation of fear of immediate unlawful force called?" },
+  { q: "What is the unlawful application of force to another person called?" },
+  { q: "What is the defence that a person acted to protect themselves from imminent harm?" },
+  { q: "What is the principle that no one should be a judge in their own cause?" },
+  { q: "What Latin phrase means ‘hear the other side’?" },
+  { q: "What is the legal process of resolving a dispute in court called?" },
+  { q: "What is a court order requiring a person to do or stop doing something called?" },
+  { q: "What doctrine prevents a matter already finally decided from being litigated again?" },
 ];
 
-async function submitQuiz(answers: Record<number, number>) {
+
+async function submitQuiz(answers: Record<number, string>) {
   participant.answers = answers;
   participant.elapsed = participant.startedAt ? Math.min(participant.durationMinutes * 60, Math.floor((Date.now() - participant.startedAt) / 1000)) : 0;
   const response = await fetch("/api/submissions", {
@@ -815,9 +830,10 @@ async function submitQuiz(answers: Record<number, number>) {
 }
 
 function Quiz() {
-  const quizQuestions = participant.quizQuestions.length ? participant.quizQuestions : questions.slice(0, participant.questionCount);
+  const quizQuestions = participant.quizQuestions.length ? participant.quizQuestions : lawFallbackQuestions.slice(0, participant.questionCount).map((question, index) => ({ id: `fallback-${index}`, q: question.q }));
   const [current, setCurrent] = useState(0);
-  const [answers, setAnswers] = useState<Record<number, number>>(participant.answers);
+  const [answers, setAnswers] = useState<Record<number, string>>(participant.answers);
+  const answeredCount = Object.values(answers).filter((answer) => answer.trim().length > 0).length;
   const [time, setTime] = useState(participant.durationMinutes * 60);
   const [confirm, setConfirm] = useState(false);
   useEffect(() => {
@@ -870,14 +886,14 @@ function Quiz() {
           <div>
             <small>YOUR PROGRESS</small>
             <strong>
-              {Object.keys(answers).length}/{quizQuestions.length}
+              {answeredCount}/{quizQuestions.length}
             </strong>
             <span>answered</span>
           </div>
           <div className="question-grid">
             {quizQuestions.map((_, i) => (
               <button
-                className={`${i === current ? "active" : ""} ${answers[i] !== undefined ? "done" : ""}`}
+                className={`${i === current ? "active" : ""} ${answers[i]?.trim() ? "done" : ""}`}
                 onClick={() => setCurrent(i)}
                 key={i}
               >
@@ -896,27 +912,25 @@ function Quiz() {
             <span>
               QUESTION {current + 1} OF {quizQuestions.length}
             </span>
-            <span>1 POINT</span>
+            <span>WRITTEN ANSWER</span>
           </div>
           <h1>{quizQuestions[current].q}</h1>
-          <p>Select one answer</p>
-          <div className="answers">
-          {quizQuestions[current].opts.map((o, i) => (
-              <button
-                key={o}
-                className={answers[current] === i ? "selected" : ""}
-                onClick={() => {
-                  const next = { ...answers, [current]: i };
-                  setAnswers(next);
-                  participant.answers = next;
-                }}
-              >
-                <span>{String.fromCharCode(65 + i)}</span>
-                {o}
-                <i>{answers[current] === i && <Icon name="check" size={16} />}</i>
-              </button>
-            ))}
-          </div>
+          <p>Write a direct answer in your own words.</p>
+          <label className="written-answer-field">
+            <span>Your answer</span>
+            <textarea
+              rows={5}
+              maxLength={2000}
+              value={answers[current] || ""}
+              onChange={(event) => {
+                const next = { ...answers, [current]: event.target.value };
+                setAnswers(next);
+                participant.answers = next;
+              }}
+              placeholder="Type your answer here…"
+            />
+            <small>{(answers[current] || "").length}/2000 characters</small>
+          </label>
           <div className="quiz-actions">
             <Button
               kind="ghost"
@@ -950,7 +964,7 @@ function Quiz() {
             <p>
               You've answered{" "}
               <b>
-                {Object.keys(answers).length} of {quizQuestions.length}
+                {answeredCount} of {quizQuestions.length}
               </b>{" "}
               questions. You won't be able to make changes after submitting.
             </p>
@@ -1234,6 +1248,7 @@ function AdminShell({
             <Icon name="menu" />
           </button>
           <span className="admin-connection"><i /> Supabase connected</span>
+          <ThemeToggle />
           <button className="view-site" onClick={() => go("home")}>
             View public site <Icon name="arrow" />
           </button>
@@ -1527,7 +1542,7 @@ function CreateCompetition({ editing = false }: { editing?: boolean }) {
           <div className="three-col">
             <label>
               Number of questions
-              <input name="questionCount" type="number" min="1" max="20" required defaultValue={existing?.questionCount || 20} />
+              <input name="questionCount" type="number" min="1" max="50" required defaultValue={existing?.questionCount || 20} />
             </label>
             <label>
               Time limit (minutes)
@@ -1544,7 +1559,7 @@ function CreateCompetition({ editing = false }: { editing?: boolean }) {
               name="rules"
               rows={4}
               defaultValue={existing?.rules ||
-                "One correct answer per question.\nHighest score wins; ties are broken by fastest completion time."
+                "Answer each question in writing.\nHighest score wins; ties are broken by fastest completion time."
               }
             />
           </label>
@@ -1592,7 +1607,7 @@ function CreateCompetition({ editing = false }: { editing?: boolean }) {
 }
 
 function Questions() {
-  const [rows, setRows] = useState<Array<{ id: string; question: string; options: string[]; correctIndex: number; category: string; marks: number; explanation: string; status: string }>>([]);
+  const [rows, setRows] = useState<Array<{ id: string; question: string; acceptedAnswers: string[]; category: string; marks: number; explanation: string; status: string }>>([]);
   const [preview, setPreview] = useState<(typeof rows)[number] | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [created, setCreated] = useState(false);
@@ -1611,7 +1626,7 @@ function Questions() {
     <AdminShell
       screen="questions"
       title="Question bank"
-      subtitle="Build, organize and review your competition questions."
+      subtitle="Create law questions that require students to write a direct answer."
       action={
         <div className="button-row">
           <Button kind="ghost" icon="upload" onClick={() => go("upload")}>
@@ -1673,7 +1688,7 @@ function Questions() {
             <span>
               <i className="category">{q.category}</i>
             </span>
-            <span>{q.options[q.correctIndex]}</span>
+            <span>{q.acceptedAnswers?.join(" · ") || "Answer not set"}</span>
             <span>{q.marks} mark{q.marks === 1 ? "" : "s"}</span>
             <span>
               <i className={`pill ${q.status === "published" ? "green" : "orange"}`}>{q.status}</i>
@@ -1702,13 +1717,7 @@ function Questions() {
             </button>
             <span className="eyebrow">QUESTION PREVIEW</span>
             <h2>{preview?.question}</h2>
-            {(preview?.options || []).map((o, i) => (
-              <div className={i === preview?.correctIndex ? "correct-option" : ""} key={o}>
-                <span>{String.fromCharCode(65 + i)}</span>
-                {o}
-                {i === preview?.correctIndex && <Icon name="check" />}
-              </div>
-            ))}
+            <div className="correct-option"><span>ACCEPTED ANSWERS</span>{preview?.acceptedAnswers?.join(" · ") || "No answer set"}<Icon name="check" /></div>
             {preview?.explanation && <p><b>Explanation:</b> {preview.explanation}</p>}
           </div>
         </div>
@@ -1720,12 +1729,11 @@ function Questions() {
             onSubmit={(event) => {
               event.preventDefault();
               const values = new FormData(event.currentTarget);
-              const options = ["A", "B", "C", "D"].map((letter) => String(values.get(`option_${letter}`) || "").trim());
-              const correctIndex = ["A", "B", "C", "D"].indexOf(String(values.get("correctAnswer")));
+              const acceptedAnswers = String(values.get("acceptedAnswers") || "").split(/[;\n]+/).map((answer) => answer.trim()).filter(Boolean);
               void adminFetch("/api/admin/questions", {
                 method: "POST",
                 headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionStorage.getItem("adminToken") || ""}` },
-                body: JSON.stringify({ question: values.get("question"), options, correctIndex, category: values.get("category"), marks: values.get("marks"), explanation: values.get("explanation"), status: values.get("status") }),
+                body: JSON.stringify({ question: values.get("question"), acceptedAnswers, category: values.get("category"), marks: values.get("marks"), explanation: values.get("explanation"), status: values.get("status") }),
               }).then(async (response) => {
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || "Could not save this question.");
@@ -1740,39 +1748,31 @@ function Questions() {
             </button>
             <span className="eyebrow">NEW QUESTION</span>
             <h2>Add a question</h2>
-            <p>Complete every answer option and identify the single correct response.</p>
+            <p>Write a law question and provide the answer text used to mark written responses.</p>
             <label>
               Question text *
               <textarea required name="question" rows={3} placeholder="Enter the question participants will see" />
             </label>
-            <div className="two-col">
-              {["A", "B", "C", "D"].map((option) => (
-                <label key={option}>
-                  Option {option} *
-                  <input required name={`option_${option}`} placeholder={`Answer option ${option}`} />
-                </label>
-              ))}
-            </div>
+            <label>
+              Correct answer *
+              <textarea required name="acceptedAnswers" rows={3} placeholder="e.g. Ratio decidendi" />
+              <small>For equivalent answers, put one accepted version per line or separate them with semicolons.</small>
+            </label>
             <div className="three-col">
               <label>
-                Correct answer *
-                <select name="correctAnswer" required defaultValue="">
-                  <option value="" disabled>
-                    Select
-                  </option>
-                  <option>A</option>
-                  <option>B</option>
-                  <option>C</option>
-                  <option>D</option>
-                </select>
+                Answer format
+                <input readOnly value="Written response" />
               </label>
               <label>
                 Category
                 <select name="category">
-                  <option>General knowledge</option>
-                  <option>Science</option>
-                  <option>History</option>
-                  <option>Technology</option>
+                  <option>Law</option>
+                  <option>Constitutional Law</option>
+                  <option>Criminal Law</option>
+                  <option>Contract Law</option>
+                  <option>Tort Law</option>
+                  <option>Evidence</option>
+                  <option>Legal Principles</option>
                 </select>
               </label>
               <label>
@@ -1825,18 +1825,16 @@ function parseQuestionCsv(source: string) {
   if (cell || row.length) { row.push(cell); rows.push(row); }
   if (rows.length < 2) throw new Error("The CSV needs a header row and at least one question.");
   const headers = rows.shift()!.map((value) => value.trim().replace(/^\uFEFF/, "").toLowerCase());
-  const required = ["question", "option_a", "option_b", "option_c", "option_d", "correct_answer"];
+  const required = ["question", "correct_answer"];
   const missing = required.filter((header) => !headers.includes(header));
   if (missing.length) throw new Error(`Missing CSV columns: ${missing.join(", ")}`);
   return rows.map((values, index) => {
     const get = (key: string) => values[headers.indexOf(key)]?.trim() || "";
-    const answer = get("correct_answer").toUpperCase();
-    const options = ["a", "b", "c", "d"].map((letter) => get(`option_${letter}`));
-    const answerIndex = /^[A-D]$/.test(answer) ? answer.charCodeAt(0) - 65 : /^[1-4]$/.test(answer) ? Number(answer) - 1 : options.findIndex((option) => option.toUpperCase() === answer);
-    if (!get("question") || options.some((option) => !option) || answerIndex < 0) throw new Error(`Row ${index + 2} is missing a question, an option, or a valid answer (A–D, 1–4, or the exact option text).`);
+    const acceptedAnswers = [...get("correct_answer").split(/[;|]+/), ...get("accepted_answers").split(/[;|]+/)].map((answer) => answer.trim()).filter(Boolean);
+    if (!get("question") || !acceptedAnswers.length) throw new Error(`Row ${index + 2} needs a question and at least one written correct answer.`);
     const marks = Number(get("marks") || 1);
     if (!Number.isFinite(marks) || marks <= 0) throw new Error(`Row ${index + 2} must have a positive number of marks.`);
-    return { question: get("question"), options, correctIndex: answerIndex, marks, category: get("category") || "General knowledge", explanation: get("explanation") };
+    return { question: get("question"), acceptedAnswers, marks, category: get("category") || "Law", explanation: get("explanation") };
   });
 }
 
@@ -1845,6 +1843,7 @@ function UploadQuestions() {
     [fileName, setFileName] = useState(""),
     [fileError, setFileError] = useState(""),
     [progress, setProgress] = useState(0),
+    [importSummary, setImportSummary] = useState<{ imported: number; skippedDuplicates: number } | null>(null),
     [parsedQuestions, setParsedQuestions] = useState<ReturnType<typeof parseQuestionCsv>>([]),
     [competitions, setCompetitions] = useState<PublicCompetition[]>([]),
     [uploadTargetId, setUploadTargetId] = useState(""),
@@ -1886,6 +1885,7 @@ function UploadQuestions() {
   async function upload() {
     setUploading(true);
     setFileError("");
+    setImportSummary(null);
     try {
       const response = await adminFetch("/api/admin/questions/bulk", {
         method: "POST",
@@ -1894,6 +1894,7 @@ function UploadQuestions() {
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Could not import this CSV.");
+      setImportSummary({ imported: Number(result.imported) || 0, skippedDuplicates: Number(result.skippedDuplicates) || 0 });
       setProgress(100);
     } catch (error) {
       setFileError(error instanceof Error ? error.message : "Could not reach the backend.");
@@ -1905,9 +1906,9 @@ function UploadQuestions() {
     <AdminShell
       screen="upload"
       title="Bulk upload questions"
-      subtitle="Import a CSV file into the current quiz question bank."
+      subtitle="Import law questions with direct written answers."
       action={<Button kind="ghost" icon="download" onClick={() => {
-        const blob = new Blob(['question,option_a,option_b,option_c,option_d,correct_answer,marks,category,explanation\n"Example question?",Option A,Option B,Option C,Option D,A,1,General knowledge,Example explanation'], { type: "text/csv" });
+        const blob = new Blob(['question,correct_answer,accepted_answers,marks,category,explanation\n"What is the binding legal reason for a court decision called?",Ratio decidendi,"Ratio; Ratio decidendi",1,Legal Principles,'], { type: "text/csv" });
         const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = "john-quiz-questions-template.csv"; link.click(); URL.revokeObjectURL(link.href);
       }}>Download sample CSV</Button>}
     >
@@ -1959,6 +1960,7 @@ function UploadQuestions() {
                   setFileName("");
                   setFileError("");
                   setProgress(0);
+                  setImportSummary(null);
                   setParsedQuestions([]);
                 }}
               >
@@ -1994,8 +1996,8 @@ function UploadQuestions() {
             <div className="validation-success">
               <Icon name="check" />
               <div>
-                <b>{parsedQuestions.length} questions imported</b>
-                <p>They are saved to {competitions.find((item) => item.id === uploadTargetId)?.title || "the selected quiz"} and appear in its question bank.</p>
+                <b>{importSummary?.imported ?? parsedQuestions.length} questions imported</b>
+                <p>{importSummary?.skippedDuplicates ? `${importSummary.skippedDuplicates} existing duplicate questions were skipped. ` : ""}They are saved to {competitions.find((item) => item.id === uploadTargetId)?.title || "the selected quiz"} and appear in its question bank.</p>
               </div>
             </div>
           )}
@@ -2005,24 +2007,21 @@ function UploadQuestions() {
           <p>Your spreadsheet must include these exact column headers.</p>
           {[
             "question",
-            "option_a",
-            "option_b",
-            "option_c",
-            "option_d",
             "correct_answer",
-            "marks",
-            "category",
+            "accepted_answers (optional)",
+            "marks (optional)",
+            "category (optional)",
             "explanation (optional)",
           ].map((x, i) => (
             <div key={x}>
               <span>{x}</span>
-              {i < 7 && <b>Required</b>}
+              {i < 2 && <b>Required</b>}
             </div>
           ))}
           <div className="tip">
             <Icon name="file" />
             <p>
-              <b>Formatting tip</b>Use A, B, C or D in the correct_answer column.
+              <b>Formatting tip</b>Write the answer itself. Separate equivalent accepted answers with semicolons.
             </p>
           </div>
         </div>
@@ -2140,7 +2139,7 @@ function LiveMonitor() {
 }
 
 function Participants() {
-  const [records, setRecords] = useState<Array<{ id: string; name: string; email: string; competitionId: string; competitionTitle: string; registeredAt: string; submission: { score: number; elapsedSeconds: number; answers?: number[] } | null }>>([]);
+  const [records, setRecords] = useState<Array<{ id: string; name: string; username: string; phone: string; classLevel: string; competitionId: string; competitionTitle: string; registeredAt: string; submission: { score: number; elapsedSeconds: number; answers?: number[] } | null }>>([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [competitionFilter, setCompetitionFilter] = useState("all");
@@ -2150,7 +2149,7 @@ function Participants() {
       .then((data) => setRecords(data.participants || []))
       .catch(() => setRecords([]));
   }, []);
-  const visibleRecords = records.filter((record) => (record.name.toLowerCase().includes(search.toLowerCase()) || record.email.toLowerCase().includes(search.toLowerCase())) && (statusFilter === "all" || (statusFilter === "completed" ? Boolean(record.submission) : !record.submission)) && (competitionFilter === "all" || record.competitionId === competitionFilter));
+  const visibleRecords = records.filter((record) => [record.name, record.username, record.phone, record.classLevel].some((value) => (value || "").toLowerCase().includes(search.toLowerCase())) && (statusFilter === "all" || (statusFilter === "completed" ? Boolean(record.submission) : !record.submission)) && (competitionFilter === "all" || record.competitionId === competitionFilter));
   const competitions = [...new Map(records.map((record) => [record.competitionId, record.competitionTitle])).entries()];
   return (
     <AdminShell
@@ -2159,7 +2158,7 @@ function Participants() {
       subtitle="Manage registrations and review individual submission records."
       action={
         <Button kind="ghost" icon="download" onClick={() => {
-          const csv = ["name,email,competition,registered_at,score", ...visibleRecords.map((record) => `"${record.name.replace(/"/g, '""')}","${record.email.replace(/"/g, '""')}","${record.competitionTitle}",${record.registeredAt},${record.submission?.score ?? ""}`)].join("\n");
+          const csv = ["name,username,phone,class_level,competition,registered_at,score", ...visibleRecords.map((record) => `"${record.name.replace(/"/g, '""')}","${record.username}","${record.phone}","${record.classLevel}","${record.competitionTitle}",${record.registeredAt},${record.submission?.score ?? ""}`)].join("\n");
           const link = document.createElement("a"); link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); link.download = "quiz-participants.csv"; link.click(); URL.revokeObjectURL(link.href);
         }}>Export CSV</Button>
       }
@@ -2172,9 +2171,9 @@ function Participants() {
           icon="users"
         />
         <Stat
-          label="Verified email"
-          value={String(records.filter((record) => record.email).length)}
-          change="Provided an email address"
+          label="Phone on file"
+          value={String(records.filter((record) => record.phone).length)}
+          change="Participant contact details"
           icon="check"
           tone="green"
         />
@@ -2189,7 +2188,7 @@ function Participants() {
       <div className="filterbar">
         <div>
           <Icon name="search" />
-          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by name or email..." />
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, username, phone or class..." />
         </div>
         <select value={competitionFilter} onChange={(event) => setCompetitionFilter(event.target.value)}>
           <option value="all">All competitions</option>
@@ -2204,18 +2203,21 @@ function Participants() {
       <div className="surface data-table admin-table participants-table">
         <div className="tr th">
           <span>PARTICIPANT</span>
+          <span>PHONE</span>
+          <span>CLASS / LEVEL</span>
           <span>COMPETITION</span>
           <span>REGISTERED</span>
           <span>SCORE</span>
           <span>STATUS</span>
-          <span />
         </div>
         {visibleRecords.map((r) => (
           <div className="tr" key={r.id}>
             <span>
               <b>{r.name}</b>
-              <small>{r.email || "No email provided"}</small>
+              <small>@{r.username}</small>
             </span>
+            <span>{r.phone || "—"}</span>
+            <span>{r.classLevel || "—"}</span>
             <span>{r.competitionTitle}</span>
             <span>{new Date(r.registeredAt).toLocaleDateString()}</span>
             <span>
@@ -2224,7 +2226,6 @@ function Participants() {
             <span>
               <i className={`pill ${r.submission ? "green" : "orange"}`}>{r.submission ? "Completed" : "Registered"}</i>
             </span>
-            <span />
           </div>
         ))}
         {!visibleRecords.length && <div className="empty-state">No participants match these filters.</div>}
@@ -2523,6 +2524,7 @@ function Login() {
         </small>
       </div>
       <div className="login-panel">
+        <ThemeToggle />
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -2574,6 +2576,11 @@ function Login() {
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>(() => window.location.pathname.startsWith("/admin") ? (sessionStorage.getItem("adminToken") ? "dashboard" : "login") : "home");
+  const [theme, setTheme] = useState<"light" | "dark">(() => localStorage.getItem("johnquiz-theme") === "dark" ? "dark" : "light");
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("johnquiz-theme", theme);
+  }, [theme]);
   globalGo = (next) => {
     const adminScreens: Screen[] = ["login", "dashboard", "competitions", "create", "edit", "questions", "upload", "live", "participants", "winners", "reports", "settings"];
     if (adminScreens.includes(next) && next !== "login" && !sessionStorage.getItem("adminToken")) next = "login";
@@ -2612,5 +2619,5 @@ export default function App() {
     reports: <Reports />,
     settings: <SettingsPage />,
   };
-  return views[screen];
+  return <ThemeContext.Provider value={{ theme, toggleTheme: () => setTheme((value) => value === "dark" ? "light" : "dark") }}>{views[screen]}</ThemeContext.Provider>;
 }

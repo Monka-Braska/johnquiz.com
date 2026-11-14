@@ -9,10 +9,10 @@ import { createClient } from '@supabase/supabase-js';
 dotenv.config({ path: path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '.env'), override: true });
 
 const port = Number(process.env.API_PORT || 3001);
+const maxQuestions = 50;
 const dataDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data');
 const dataFile = path.join(dataDir, 'store.json');
-const defaultCompetition = { id: '00000000-0000-4000-8000-000000000048', title: 'The Ultimate Knowledge Sprint', description: 'General knowledge · Advanced', questionCount: 20, durationMinutes: 10, maxParticipants: 1000, rules: 'One correct answer per question. Highest score wins; ties are broken by fastest completion time.', prize: '₵2,500', entryCode: 'JQ-000048', isPublished: true, status: 'active', createdAt: new Date(0).toISOString() };
-const answerKey = [1, 1, 1, 2, 3, 1, 1, 2, 2, 1, 1, 1, 1, 1, 2, 2, 1, 2, 1, 1];
+const defaultCompetition = { id: '00000000-0000-4000-8000-000000000048', title: 'The Ultimate Knowledge Sprint', description: 'Law students · Legal reasoning', questionCount: 20, durationMinutes: 10, maxParticipants: 1000, rules: 'Answer each question in writing. Highest score wins; ties are broken by fastest completion time.', prize: '₵2,500', entryCode: 'JQ-000048', isPublished: true, status: 'active', createdAt: new Date(0).toISOString() };
 const adminEmail = process.env.ADMIN_EMAIL || 'admin@johnquiz.com';
 const adminPassword = process.env.ADMIN_PASSWORD || 'champion123';
 const adminSessionSecret = process.env.ADMIN_SESSION_SECRET || adminPassword;
@@ -32,6 +32,17 @@ try {
 store.participants ||= [];
 store.submissions ||= [];
 store.accounts ||= [];
+const knownUsernames = new Set();
+for (const account of store.accounts) {
+  const emailName = String(account.email || '').split('@')[0].toLowerCase().replace(/[^a-z0-9_.-]/g, '').slice(0, 20);
+  let username = String(account.username || emailName || 'player').toLowerCase();
+  if (username.length < 3) username = `user_${username}`;
+  if (knownUsernames.has(username)) username = `${username.slice(0, 13)}_${String(account.id || randomUUID()).replaceAll('-', '').slice(-6)}`;
+  account.username = username;
+  knownUsernames.add(username);
+  account.phone ||= store.participants.find((person) => person.accountId === account.id && person.phone)?.phone || '';
+  account.classLevel ||= '';
+}
 const persist = () => writeFile(dataFile, JSON.stringify(store, null, 2));
 
 function derivePassword(password, salt) {
@@ -44,7 +55,7 @@ function derivePassword(password, salt) {
 }
 
 function createUserToken(account) {
-  const payload = Buffer.from(JSON.stringify({ accountId: account.id, email: account.email, expiresAt: Date.now() + 12 * 60 * 60 * 1000 })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({ accountId: account.id, username: account.username, phone: account.phone || '', classLevel: account.classLevel || account.class_level || '', expiresAt: Date.now() + 12 * 60 * 60 * 1000 })).toString('base64url');
   const signature = createHmac('sha256', userSessionSecret).update(payload).digest('base64url');
   return `${payload}.${signature}`;
 }
@@ -59,44 +70,69 @@ function getSignedUser(req) {
   if (expected.length !== received.length || !timingSafeEqual(expected, received)) return null;
   try {
     const session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    return Number(session.expiresAt) > Date.now() && typeof session.accountId === 'string' && typeof session.email === 'string' ? session : null;
+    return Number(session.expiresAt) > Date.now() && typeof session.accountId === 'string' && typeof session.username === 'string' ? session : null;
   } catch { return null; }
 }
 
-async function findAccount(email) {
-  if (!supabase) return store.accounts.find((account) => account.email === email) || null;
-  const { data, error } = await supabase.from('user_accounts').select('id,email,password_salt,password_hash,created_at').eq('email', email).maybeSingle();
+async function findAccount(username) {
+  const normalized = username.trim().toLowerCase();
+  if (!supabase) return store.accounts.find((account) => account.username?.toLowerCase() === normalized) || null;
+  const { data, error } = await supabase.from('user_accounts').select('id,username,phone,class_level,password_salt,password_hash,created_at').eq('username', normalized).maybeSingle();
   if (error) throw error;
   return data || null;
 }
 
-async function createAccount(email, password) {
+async function createAccount(username, password, phone, classLevel) {
   const id = randomUUID();
   const salt = randomBytes(16).toString('hex');
   const hash = await derivePassword(password, salt);
-  const record = { id, email, passwordSalt: salt, passwordHash: hash, createdAt: new Date().toISOString() };
+  const account = { id, username: username.trim().toLowerCase(), phone: phone.trim(), classLevel: classLevel.trim(), passwordSalt: salt, passwordHash: hash, createdAt: new Date().toISOString() };
   if (!supabase) {
-    store.accounts.push(record);
+    if (store.accounts.some((item) => item.username?.toLowerCase() === account.username)) {
+      const error = new Error('That username is already taken. Choose another.');
+      error.code = '23505';
+      throw error;
+    }
+    store.accounts.push(account);
     await persist();
-    return { id, email };
+    return account;
   }
-  const { data, error } = await supabase.from('user_accounts').insert({ id, email, password_salt: salt, password_hash: hash }).select('id,email').single();
+  const { data, error } = await supabase.from('user_accounts').insert({ id, username: account.username, email: null, phone: account.phone, class_level: account.classLevel, password_salt: salt, password_hash: hash }).select('id,username,phone,class_level').single();
+  if (error) throw error;
+  return data;
+}
+
+function publicAccount(account) {
+  return { id: account.id, username: account.username, phone: account.phone || '', classLevel: account.classLevel || account.class_level || '' };
+}
+
+async function updateAccountProfile(accountId, phone, classLevel) {
+  if (!supabase) {
+    const account = store.accounts.find((item) => item.id === accountId);
+    if (!account) return null;
+    account.phone = phone;
+    account.classLevel = classLevel;
+    await persist();
+    return account;
+  }
+  const { data, error } = await supabase.from('user_accounts').update({ phone, class_level: classLevel }).eq('id', accountId).select('id,username,phone,class_level').single();
   if (error) throw error;
   return data;
 }
 
 async function allParticipants() {
-  if (!supabase) return store.participants;
-  let { data, error } = await supabase.from('participants').select('id,account_id,full_name,email,phone,competition_id,created_at').order('created_at', { ascending: false });
-  if (error?.code === '42703' || error?.code === 'PGRST204') {
-    ({ data, error } = await supabase.from('participants').select('id,full_name,email,phone,competition_id,created_at').order('created_at', { ascending: false }));
+  if (!supabase) return store.participants.map((person) => ({ ...person, username: person.username || '', phone: person.phone || '', classLevel: person.classLevel || '' }));
+  let { data, error } = await supabase.from('participants').select('id,account_id,full_name,email,username,phone,class_level,competition_id,created_at').order('created_at', { ascending: false });
+  if (['42703', 'PGRST204'].includes(error?.code)) {
+    ({ data, error } = await supabase.from('participants').select('id,account_id,full_name,email,phone,competition_id,created_at').order('created_at', { ascending: false }));
+    if (!error) return data.map((person) => ({ id: person.id, accountId: person.account_id, name: person.full_name, username: String(person.email || '').split('@')[0], email: person.email || '', phone: person.phone || '', classLevel: '', competitionId: person.competition_id, registeredAt: person.created_at }));
   }
-  if (error?.code === '42703' || error?.code === 'PGRST204') {
+  if (['42703', 'PGRST204'].includes(error?.code)) {
     ({ data, error } = await supabase.from('participants').select('id,full_name,email,phone,created_at').order('created_at', { ascending: false }));
-    if (!error) return data.map((person) => ({ id: person.id, name: person.full_name, email: person.email, phone: person.phone, competitionId: defaultCompetition.id, registeredAt: person.created_at }));
+    if (!error) return data.map((person) => ({ id: person.id, name: person.full_name, username: String(person.email || '').split('@')[0], email: person.email || '', phone: person.phone || '', classLevel: '', competitionId: defaultCompetition.id, registeredAt: person.created_at }));
   }
   if (error) throw error;
-  return data.map((person) => ({ id: person.id, accountId: person.account_id, name: person.full_name, email: person.email, phone: person.phone, competitionId: person.competition_id, registeredAt: person.created_at }));
+  return data.map((person) => ({ id: person.id, accountId: person.account_id, name: person.full_name, username: person.username, email: person.email, phone: person.phone, classLevel: person.class_level, competitionId: person.competition_id, registeredAt: person.created_at }));
 }
 
 async function allCompetitions() {
@@ -135,7 +171,11 @@ function selectCurrentCompetition(rows) {
     || rows.find((row) => row.status === 'scheduled' && isCompetitionOpen(row));
   const upcoming = rows.filter((row) => row.status === 'scheduled' && row.startAt && new Date(row.startAt).getTime() > Date.now())
     .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())[0];
-  return current || upcoming || rows.find(isCompetitionOpen) || defaultCompetition;
+  // Keep the displayed event and its entry code tied to a real published row
+  // when every real competition is closed. Falling back to the demo event here
+  // showed a code that the participant registration endpoint could not find.
+  const latestPublished = rows.find((row) => row.isPublished && row.status !== 'draft');
+  return current || upcoming || rows.find(isCompetitionOpen) || latestPublished || defaultCompetition;
 }
 
 async function currentCompetition() {
@@ -155,16 +195,25 @@ async function insertParticipant(person) {
     await persist();
     return person;
   }
-  let { data, error } = await supabase.from('participants').insert({ id: person.id, account_id: person.accountId, full_name: person.name, email: person.email, phone: person.phone, competition_id: person.competitionId }).select('id,account_id,full_name,email,phone,competition_id,created_at').single();
-  if (error?.code === '42703' || error?.code === 'PGRST204') {
-    ({ data, error } = await supabase.from('participants').insert({ id: person.id, full_name: person.name, email: person.email, phone: person.phone, competition_id: person.competitionId }).select('id,full_name,email,phone,competition_id,created_at').single());
-  }
-  if (error?.code === '42703' || error?.code === 'PGRST204') {
-    ({ data, error } = await supabase.from('participants').insert({ id: person.id, full_name: person.name, email: person.email, phone: person.phone }).select('id,full_name,email,phone,created_at').single());
-    if (!error) return { id: data.id, name: data.full_name, email: data.email, phone: data.phone, competitionId: defaultCompetition.id, registeredAt: data.created_at };
-  }
+  const { data, error } = await supabase.from('participants').insert({ id: person.id, account_id: person.accountId, full_name: person.name, email: '', username: person.username, phone: person.phone, class_level: person.classLevel, competition_id: person.competitionId }).select('id,account_id,full_name,email,username,phone,class_level,competition_id,created_at').single();
   if (error) throw error;
-  return { id: data.id, accountId: data.account_id, name: data.full_name, email: data.email, phone: data.phone, competitionId: data.competition_id, registeredAt: data.created_at };
+  return { id: data.id, accountId: data.account_id, name: data.full_name, username: data.username, email: data.email, phone: data.phone, classLevel: data.class_level, competitionId: data.competition_id, registeredAt: data.created_at };
+}
+
+async function reserveParticipantAttempt(accountId, competitionId) {
+  if (!supabase) {
+    return !store.participants.some((person) => person.accountId === accountId && person.competitionId === competitionId);
+  }
+  const { error } = await supabase.from('participant_attempts').insert({ account_id: accountId, competition_id: competitionId });
+  if (error?.code === '23505') return false;
+  if (error) throw error;
+  return true;
+}
+
+async function releaseParticipantAttempt(accountId, competitionId) {
+  if (!supabase) return;
+  const { error } = await supabase.from('participant_attempts').delete().eq('account_id', accountId).eq('competition_id', competitionId);
+  if (error) throw error;
 }
 
 async function insertCompetition(competition) {
@@ -212,8 +261,12 @@ async function deleteCompetition(id) {
 }
 
 async function questionsFor(competitionId) {
-  if (!supabase) return (store.questions || []).filter((question) => question.competitionId === competitionId);
-  let { data: questions, error } = await supabase.from('questions').select('id,competition_id,question_text,marks,explanation,position,category,status').eq('competition_id', competitionId).order('position', { ascending: true });
+  if (!supabase) return (store.questions || []).filter((question) => question.competitionId === competitionId).map((question) => ({
+    ...question,
+    questionType: 'short_answer',
+    acceptedAnswers: question.acceptedAnswers?.length ? question.acceptedAnswers : [question.options?.[question.correctIndex] || ''].filter(Boolean),
+  }));
+  let { data: questions, error } = await supabase.from('questions').select('id,competition_id,question_text,question_type,accepted_answers,marks,explanation,position,category,status').eq('competition_id', competitionId).order('position', { ascending: true });
   if (error?.code === '42703' || error?.code === 'PGRST204') {
     ({ data: questions, error } = await supabase.from('questions').select('id,competition_id,question_text,marks,explanation,position').eq('competition_id', competitionId).order('position', { ascending: true }));
     if (error) throw error;
@@ -223,7 +276,14 @@ async function questionsFor(competitionId) {
   if (!questions.length) return [];
   const { data: options, error: optionError } = await supabase.from('question_options').select('id,question_id,option_text,is_correct,position').in('question_id', questions.map((question) => question.id)).order('position', { ascending: true });
   if (optionError) throw optionError;
-  return questions.map((question) => ({ id: question.id, competitionId: question.competition_id, question: question.question_text, options: options.filter((option) => option.question_id === question.id).map((option) => option.option_text), correctIndex: options.filter((option) => option.question_id === question.id).findIndex((option) => option.is_correct), marks: Number(question.marks), explanation: question.explanation || '', position: question.position, category: question.category, status: question.status }));
+  return questions.map((question) => {
+    const questionOptions = options.filter((option) => option.question_id === question.id);
+    const legacyAccepted = questionOptions.filter((option) => option.is_correct).map((option) => option.option_text);
+    const acceptedAnswers = Array.isArray(question.accepted_answers) && question.accepted_answers.length
+      ? question.accepted_answers
+      : legacyAccepted;
+    return { id: question.id, competitionId: question.competition_id, question: question.question_text, questionType: 'short_answer', acceptedAnswers, options: questionOptions.map((option) => option.option_text), correctIndex: questionOptions.findIndex((option) => option.is_correct), marks: Number(question.marks), explanation: question.explanation || '', position: question.position, category: question.category, status: question.status };
+  });
 }
 
 async function saveQuestion(question) {
@@ -233,14 +293,8 @@ async function saveQuestion(question) {
     await persist();
     return question;
   }
-  const { data, error } = await supabase.from('questions').insert({ id: question.id, competition_id: question.competitionId, question_text: question.question, question_type: 'mcq_single', marks: question.marks, accepted_answers: [], explanation: question.explanation, position: question.position, category: question.category, status: question.status }).select('id,competition_id,question_text,marks,explanation,position,category,status').single();
+  const { data, error } = await supabase.from('questions').insert({ id: question.id, competition_id: question.competitionId, question_text: question.question, question_type: 'short_answer', marks: question.marks, accepted_answers: question.acceptedAnswers, explanation: question.explanation, position: question.position, category: question.category, status: question.status }).select('id,competition_id,question_text,marks,explanation,position,category,status').single();
   if (error) throw error;
-  const rows = question.options.map((option, position) => ({ id: randomUUID(), question_id: data.id, option_text: option, is_correct: position === question.correctIndex, position }));
-  const { error: optionError } = await supabase.from('question_options').insert(rows);
-  if (optionError) {
-    await supabase.from('questions').delete().eq('id', data.id);
-    throw optionError;
-  }
   return { ...question, id: data.id };
 }
 
@@ -274,27 +328,35 @@ async function insertSubmission(entry) {
 }
 
 const questions = [
-  ['Which element has the chemical symbol “Au”?', ['Silver', 'Gold', 'Argon', 'Aluminium']],
-  ['Which planet has the shortest day in our solar system?', ['Mars', 'Jupiter', 'Venus', 'Mercury']],
-  ['Who wrote the novel “Things Fall Apart”?', ['Wole Soyinka', 'Chinua Achebe', 'Ngũgĩ wa Thiong’o', 'Ben Okri']],
-  ['What is the capital city of Canada?', ['Toronto', 'Vancouver', 'Ottawa', 'Montreal']],
-  ['Which ocean is the largest by surface area?', ['Atlantic', 'Indian', 'Arctic', 'Pacific']],
-  ['What is the largest mammal on Earth?', ['African elephant', 'Blue whale', 'Giraffe', 'Orca']],
-  ['Which country is home to the ancient city of Petra?', ['Egypt', 'Jordan', 'Greece', 'Morocco']],
-  ['What is the square root of 144?', ['10', '11', '12', '14']],
-  ['Which gas do plants absorb from the atmosphere?', ['Oxygen', 'Nitrogen', 'Carbon dioxide', 'Hydrogen']],
-  ['In which year did Ghana gain independence?', ['1952', '1957', '1960', '1963']],
-  ['What is the hardest naturally occurring substance?', ['Quartz', 'Diamond', 'Granite', 'Iron']],
-  ['Which instrument measures atmospheric pressure?', ['Thermometer', 'Barometer', 'Hygrometer', 'Anemometer']],
-  ['How many sides does a hexagon have?', ['Five', 'Six', 'Seven', 'Eight']],
-  ['Which artist painted the Mona Lisa?', ['Michelangelo', 'Leonardo da Vinci', 'Raphael', 'Caravaggio']],
-  ['What is the smallest prime number?', ['0', '1', '2', '3']],
-  ['Which organ pumps blood around the human body?', ['Liver', 'Lungs', 'Heart', 'Kidney']],
-  ['What is the official language of Brazil?', ['Spanish', 'Portuguese', 'French', 'English']],
-  ['Which is the nearest star to Earth?', ['Sirius', 'Proxima Centauri', 'The Sun', 'Alpha Centauri A']],
-  ['What is the chemical symbol for iron?', ['Ir', 'Fe', 'In', 'I']],
-  ['Which continent contains the Sahara Desert?', ['Asia', 'Africa', 'South America', 'Australia']],
-].map(([question, options], index) => ({ id: index + 1, question, options }));
+  ['What is the supreme law of Ghana?', ['1992 Constitution', 'Constitution of Ghana 1992']],
+  ['What standard of proof generally applies in Ghanaian civil cases?', ['Balance of probabilities', 'Preponderance of probabilities']],
+  ['What standard of proof applies to criminal guilt?', ['Beyond reasonable doubt']],
+  ['What is the legal principle that requires courts to follow binding earlier decisions?', ['Stare decisis']],
+  ['What is the binding legal reason for a court’s decision called?', ['Ratio decidendi', 'Ratio']],
+  ['What is a judge’s non-binding observation outside the core reasoning called?', ['Obiter dictum', 'Obiter']],
+  ['What writ requires a detained person to be brought before a court?', ['Habeas corpus']],
+  ['What is the presumption that an accused person is not guilty until proven otherwise?', ['Presumption of innocence']],
+  ['What is the legal term for a civil wrong, apart from breach of contract?', ['Tort']],
+  ['What is the legal term for a person who brings a civil claim?', ['Claimant', 'Plaintiff']],
+  ['What is the legal term for the party against whom a civil claim is brought?', ['Defendant']],
+  ['What is a formal promise enforceable by law between parties called?', ['Contract']],
+  ['What is the intentional or reckless creation of fear of immediate unlawful force called?', ['Assault']],
+  ['What is the unlawful application of force to another person called?', ['Battery']],
+  ['What is the defence that a person acted to protect themselves from imminent harm?', ['Self-defence', 'Self defense']],
+  ['What is the principle that no one should be a judge in their own cause?', ['Nemo judex in causa sua', 'Rule against bias']],
+  ['What Latin phrase means “hear the other side”?', ['Audi alteram partem']],
+  ['What is the legal process of resolving a dispute in court called?', ['Litigation']],
+  ['What is a court order requiring a person to do or stop doing something called?', ['Injunction']],
+  ['What is the doctrine that prevents a matter already finally decided from being litigated again?', ['Res judicata']],
+].map(([question, acceptedAnswers], index) => ({ id: index + 1, question, acceptedAnswers }));
+
+function fallbackQuestions(count) {
+  return questions.slice(0, count).map((question, index) => ({ id: `default-${index + 1}`, question: question.question, acceptedAnswers: question.acceptedAnswers, options: [], status: 'published' }));
+}
+
+function normalizeAnswer(answer) {
+  return String(answer || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim().replace(/\s+/g, ' ');
+}
 
 function send(res, status, data) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -337,33 +399,39 @@ createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { status: 'ok', service: 'john-quiz-api', accountAuth: true });
     if (req.method === 'POST' && ['/api/account/signup', '/api/account/login'].includes(url.pathname)) {
       const data = await readJson(req);
-      const email = typeof data.email === 'string' ? data.email.trim().toLowerCase() : '';
+      const username = typeof data.username === 'string' ? data.username.trim().toLowerCase() : '';
       const password = typeof data.password === 'string' ? data.password : '';
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return send(res, 400, { error: 'Enter a valid email address.' });
+      if (!/^[a-z0-9_.-]{3,24}$/.test(username)) return send(res, 400, { error: 'Username must be 3–24 characters using letters, numbers, dots, dashes or underscores.' });
       if (url.pathname.endsWith('/signup') && password.length < 8) return send(res, 400, { error: 'Choose a password with at least 8 characters.' });
       if (!password) return send(res, 400, { error: 'Enter your password.' });
-      let account = await findAccount(email);
+      const phone = typeof data.phone === 'string' ? data.phone.trim() : '';
+      const classLevel = typeof data.classLevel === 'string' ? data.classLevel.trim() : '';
+      if (url.pathname.endsWith('/signup') && phone.replace(/\D/g, '').length < 7) return send(res, 400, { error: 'Enter a valid phone number with at least 7 digits.' });
+      if (url.pathname.endsWith('/signup') && (classLevel.length < 2 || classLevel.length > 60)) return send(res, 400, { error: 'Enter your class or level (2–60 characters).'});
+      let account = await findAccount(username);
       if (url.pathname.endsWith('/signup')) {
-        if (account) return send(res, 409, { error: 'An account with this email already exists. Sign in instead.' });
+        if (account) return send(res, 409, { error: 'That username is already taken. Choose another.' });
         try {
-          account = await createAccount(email, password);
+          account = await createAccount(username, password, phone, classLevel);
         } catch (error) {
-          if (error?.code === '23505') return send(res, 409, { error: 'An account with this email already exists. Sign in instead.' });
+          if (error?.code === '23505') return send(res, 409, { error: 'That username is already taken. Choose another.' });
           throw error;
         }
       } else {
-        if (!account) return send(res, 401, { error: 'Email or password is incorrect.' });
+        if (!account) return send(res, 401, { error: 'Username or password is incorrect.' });
         const salt = account.passwordSalt || account.password_salt;
         const savedHash = account.passwordHash || account.password_hash;
         const incomingHash = Buffer.from(await derivePassword(password, salt), 'hex');
         const expectedHash = Buffer.from(savedHash, 'hex');
-        if (incomingHash.length !== expectedHash.length || !timingSafeEqual(incomingHash, expectedHash)) return send(res, 401, { error: 'Email or password is incorrect.' });
+        if (incomingHash.length !== expectedHash.length || !timingSafeEqual(incomingHash, expectedHash)) return send(res, 401, { error: 'Username or password is incorrect.' });
       }
-      return send(res, 200, { token: createUserToken(account), account: { id: account.id, email: account.email } });
+      return send(res, url.pathname.endsWith('/signup') ? 201 : 200, { token: createUserToken(account), account: publicAccount(account) });
     }
     if (req.method === 'GET' && url.pathname === '/api/account/me') {
       const session = getSignedUser(req);
-      return session ? send(res, 200, { account: { id: session.accountId, email: session.email } }) : send(res, 401, { error: 'Please sign in to continue.' });
+      if (!session) return send(res, 401, { error: 'Please sign in to continue.' });
+      const account = await findAccount(session.username);
+      return account ? send(res, 200, { account: publicAccount(account) }) : send(res, 401, { error: 'Please sign in to continue.' });
     }
     if (req.method === 'POST' && url.pathname === '/api/admin/login') {
       const data = await readJson(req);
@@ -380,7 +448,7 @@ createServer(async (req, res) => {
         const questionCount = Number(data.questionCount);
         const durationMinutes = Number(data.durationMinutes);
         const maxParticipants = Number(data.maxParticipants);
-        if (typeof data.title !== 'string' || data.title.trim().length < 3 || !Number.isInteger(questionCount) || questionCount < 1 || questionCount > questions.length || !Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 180 || !Number.isInteger(maxParticipants) || maxParticipants < 1) return send(res, 400, { error: 'Check the title, question count, time limit and participant limit.' });
+        if (typeof data.title !== 'string' || data.title.trim().length < 3 || !Number.isInteger(questionCount) || questionCount < 1 || questionCount > maxQuestions || !Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 180 || !Number.isInteger(maxParticipants) || maxParticipants < 1) return send(res, 400, { error: 'Check the title, question count (1–50), time limit and participant limit.' });
         const updated = await updateCompetition(id, { title: data.title.trim(), description: String(data.description || ''), startAt: data.startAt || null, endAt: data.endAt || null, questionCount, durationMinutes, maxParticipants, rules: String(data.rules || ''), prize: String(data.prize || ''), isPublished: Boolean(data.isPublished) });
         return updated ? send(res, 200, { competition: updated }) : send(res, 404, { error: 'Competition not found.' });
       }
@@ -406,28 +474,43 @@ createServer(async (req, res) => {
         const data = await readJson(req);
         const targetCompetitionId = data.competitionId || (await currentCompetition()).id;
         const text = typeof data.question === 'string' ? data.question.trim() : '';
-        const options = Array.isArray(data.options) ? data.options.map((option) => String(option).trim()) : [];
-        const correctIndex = Number(data.correctIndex);
-        if (!text || options.length < 2 || options.length > 4 || options.some((option) => !option) || !Number.isInteger(correctIndex) || correctIndex < 0 || correctIndex >= options.length) return send(res, 400, { error: 'Enter the question, 2–4 answer options, and the correct answer.' });
+        const rawAnswers = Array.isArray(data.acceptedAnswers) ? data.acceptedAnswers : String(data.correctAnswer || '').split(/[;\n]+/);
+        const acceptedAnswers = [...new Set(rawAnswers.map((answer) => String(answer).trim()).filter(Boolean))];
+        if (!text || !acceptedAnswers.length || acceptedAnswers.length > 12 || acceptedAnswers.some((answer) => answer.length > 500)) return send(res, 400, { error: 'Enter the question and at least one valid accepted answer (up to 12 answer variations).'});
         const existing = await questionsFor(targetCompetitionId);
-        const created = await saveQuestion({ id: randomUUID(), competitionId: targetCompetitionId, question: text, options, correctIndex, marks: Math.max(1, Number(data.marks) || 1), explanation: String(data.explanation || ''), position: existing.length, category: String(data.category || 'General knowledge'), status: data.status === 'draft' ? 'draft' : 'published' });
+        if (existing.length >= maxQuestions) return send(res, 400, { error: 'A quiz can contain up to 50 questions. Remove a question before adding another.' });
+        const created = await saveQuestion({ id: randomUUID(), competitionId: targetCompetitionId, question: text, questionType: 'short_answer', acceptedAnswers, marks: Math.max(1, Number(data.marks) || 1), explanation: String(data.explanation || ''), position: existing.length, category: String(data.category || 'Law'), status: data.status === 'draft' ? 'draft' : 'published' });
         return send(res, 201, { question: created });
       }
       if (req.method === 'POST' && url.pathname === '/api/admin/questions/bulk') {
         const data = await readJson(req);
-        if (!Array.isArray(data.questions) || !data.questions.length || data.questions.length > 500) return send(res, 400, { error: 'Upload a CSV containing between 1 and 500 valid questions.' });
+        if (!Array.isArray(data.questions) || !data.questions.length || data.questions.length > maxQuestions) return send(res, 400, { error: 'Upload between 1 and 50 questions per CSV.' });
         const targetCompetitionId = data.competitionId || (await currentCompetition()).id;
         const targetCompetition = (await allCompetitions()).find((competition) => competition.id === targetCompetitionId);
         if (!targetCompetition) return send(res, 404, { error: 'Select a competition before importing questions.' });
         const existing = await questionsFor(targetCompetitionId);
-        const savedQuestions = [];
+        const knownQuestions = new Set(existing.map((question) => normalizeAnswer(question.question)));
+        const importRows = [];
+        let skippedDuplicates = 0;
         for (const [index, row] of data.questions.entries()) {
-          const options = Array.isArray(row.options) ? row.options.map((option) => String(option).trim()) : [];
-          const correctIndex = Number(row.correctIndex);
-          if (typeof row.question !== 'string' || !row.question.trim() || options.length !== 4 || options.some((option) => !option) || !Number.isInteger(correctIndex) || correctIndex < 0 || correctIndex > 3) return send(res, 400, { error: `Question ${index + 1} is missing text, four options, or a valid correct answer.` });
-          savedQuestions.push(await saveQuestion({ id: randomUUID(), competitionId: targetCompetitionId, question: row.question.trim(), options, correctIndex, marks: Math.max(1, Number(row.marks) || 1), explanation: String(row.explanation || ''), position: existing.length + index, category: String(row.category || 'General knowledge'), status: 'published' }));
+          const rawAnswers = Array.isArray(row.acceptedAnswers) ? row.acceptedAnswers : String(row.correctAnswer || '').split(/[;\n]+/);
+          const acceptedAnswers = [...new Set(rawAnswers.map((answer) => String(answer).trim()).filter(Boolean))];
+          const questionText = typeof row.question === 'string' ? row.question.trim() : '';
+          if (!questionText || !acceptedAnswers.length) return send(res, 400, { error: `Question ${index + 1} is missing its text or accepted answer.` });
+          const questionKey = normalizeAnswer(questionText);
+          if (knownQuestions.has(questionKey)) {
+            skippedDuplicates++;
+            continue;
+          }
+          knownQuestions.add(questionKey);
+          importRows.push({ ...row, questionText, acceptedAnswers });
         }
-        return send(res, 201, { imported: savedQuestions.length });
+        if (existing.length + importRows.length > maxQuestions) return send(res, 400, { error: `This quiz can contain up to 50 questions. It already has ${existing.length}; remove questions or upload a smaller batch.` });
+        const savedQuestions = [];
+        for (const row of importRows) {
+          savedQuestions.push(await saveQuestion({ id: randomUUID(), competitionId: targetCompetitionId, question: row.questionText, questionType: 'short_answer', acceptedAnswers: row.acceptedAnswers, marks: Math.max(1, Number(row.marks) || 1), explanation: String(row.explanation || ''), position: existing.length + savedQuestions.length, category: String(row.category || 'Law'), status: 'published' }));
+        }
+        return send(res, 201, { imported: savedQuestions.length, skippedDuplicates });
       }
       const questionDelete = req.method === 'DELETE' && url.pathname.match(/^\/api\/admin\/questions\/([^/]+)$/);
       if (questionDelete) {
@@ -469,10 +552,11 @@ createServer(async (req, res) => {
           const participantIds = new Set(people.filter((person) => person.competitionId === competition.id).map((person) => person.id));
           const entries = submissions.filter((submission) => participantIds.has(submission.participantId));
           const bank = (await questionsFor(competition.id)).filter((question) => question.status !== 'draft');
-          const content = bank.length ? bank : questions.slice(0, competition.questionCount).map((question, index) => ({ question: question.q, correctIndex: answerKey[index] }));
+          const content = bank.length ? bank : fallbackQuestions(competition.questionCount);
           content.forEach((question, index) => {
-            const answered = entries.filter((entry) => entry.answers?.[index] !== null && entry.answers?.[index] !== undefined);
-            const missed = answered.filter((entry) => entry.answers[index] !== question.correctIndex).length;
+            const answered = entries.filter((entry) => typeof entry.answers?.[index] === 'string' && entry.answers[index].trim());
+            const accepted = question.acceptedAnswers || [];
+            const missed = answered.filter((entry) => !accepted.some((candidate) => normalizeAnswer(candidate) === normalizeAnswer(entry.answers[index]))).length;
             if (missed) missedQuestions.push({ question: question.question, missed, rate: Math.round((missed / answered.length) * 100) });
           });
         }
@@ -527,7 +611,7 @@ createServer(async (req, res) => {
         const durationMinutes = Number(data.durationMinutes);
         const maxParticipants = Number(data.maxParticipants);
         if (typeof data.title !== 'string' || data.title.trim().length < 3) return send(res, 400, { error: 'Enter a competition title with at least 3 characters.' });
-        if (!Number.isInteger(questionCount) || questionCount < 1 || questionCount > questions.length) return send(res, 400, { error: `Question count must be between 1 and ${questions.length}.` });
+        if (!Number.isInteger(questionCount) || questionCount < 1 || questionCount > maxQuestions) return send(res, 400, { error: `Question count must be between 1 and ${maxQuestions}.` });
         if (!Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 180) return send(res, 400, { error: 'Time limit must be between 1 and 180 minutes.' });
         if (!Number.isInteger(maxParticipants) || maxParticipants < 1) return send(res, 400, { error: 'Maximum participants must be at least 1.' });
         let created;
@@ -592,26 +676,28 @@ createServer(async (req, res) => {
       const item = (await allCompetitions()).find((competition) => competition.entryCode?.toUpperCase() === code);
       if (!item || !isCompetitionOpen(item)) return send(res, 404, { error: 'That entry code is invalid or the event is not open.' });
       const configuredQuestions = (await questionsFor(item.id)).filter((question) => question.status !== 'draft').slice(0, item.questionCount);
-      const quizQuestions = configuredQuestions.length ? configuredQuestions : questions.slice(0, item.questionCount).map((question, index) => ({ id: `default-${index + 1}`, question: question.q, options: question.opts }));
-      return send(res, 200, { competition: { ...item, questionCount: quizQuestions.length }, questions: quizQuestions.map((question) => ({ id: question.id, q: question.question, opts: question.options })) });
+      const quizQuestions = configuredQuestions.length ? configuredQuestions : fallbackQuestions(item.questionCount);
+      return send(res, 200, { competition: { ...item, questionCount: quizQuestions.length }, questions: quizQuestions.map((question) => ({ id: question.id, q: question.question, type: 'short_answer' })) });
     }
     if (req.method === 'GET' && url.pathname === '/api/competition/current') {
       const configuredCompetition = await currentCompetition();
       const configuredQuestions = (await questionsFor(configuredCompetition.id)).filter((question) => question.status !== 'draft').slice(0, configuredCompetition.questionCount);
-      const quizQuestions = configuredQuestions.length ? configuredQuestions : questions.slice(0, configuredCompetition.questionCount).map((question, index) => ({ id: `default-${index + 1}`, question: question.q, options: question.opts }));
+      const quizQuestions = configuredQuestions.length ? configuredQuestions : fallbackQuestions(configuredCompetition.questionCount);
       const activeCompetition = { ...configuredCompetition, questionCount: quizQuestions.length };
       const [people, submissions] = await Promise.all([allParticipants(), allSubmissions()]);
       const competitionPeople = people.filter((person) => person.competitionId === activeCompetition.id);
       const competitionSubmissions = submissions.filter((submission) => competitionPeople.some((person) => person.id === submission.participantId));
-      return send(res, 200, { competition: activeCompetition, questions: quizQuestions.map((question) => ({ id: question.id, q: question.question, opts: question.options })), participants: competitionPeople.length, submissions: competitionSubmissions.length, perfectScores: competitionSubmissions.filter((submission) => submission.score === activeCompetition.questionCount).length });
+      return send(res, 200, { competition: activeCompetition, questions: quizQuestions.map((question) => ({ id: question.id, q: question.question, type: 'short_answer' })), participants: competitionPeople.length, submissions: competitionSubmissions.length, perfectScores: competitionSubmissions.filter((submission) => submission.score === activeCompetition.questionCount).length });
     }
     if (req.method === 'POST' && url.pathname === '/api/participants') {
       const data = await readJson(req);
       const account = getSignedUser(req);
-      if (!account) return send(res, 401, { error: 'Sign in with your email and password to continue.' });
+      if (!account) return send(res, 401, { error: 'Sign in with your username and password to continue.' });
       if (typeof data.name !== 'string' || data.name.trim().length < 2) return send(res, 400, { error: 'Please provide your full name.' });
       const phone = typeof data.phone === 'string' ? data.phone.trim() : '';
       if (phone.replace(/\D/g, '').length < 7) return send(res, 400, { error: 'Enter a valid contact phone number (at least 7 digits).'});
+      const classLevel = typeof data.classLevel === 'string' ? data.classLevel.trim() : '';
+      if (classLevel.length < 2 || classLevel.length > 60) return send(res, 400, { error: 'Enter your class or level (2–60 characters).'});
       const competitions = await allCompetitions();
       const requestedCode = String(data.entryCode || '').trim().toUpperCase();
       const configuredCompetition = requestedCode
@@ -626,18 +712,27 @@ createServer(async (req, res) => {
         return send(res, 400, { error: 'This event is not currently accepting entries.' });
       }
       const configuredQuestions = (await questionsFor(configuredCompetition.id)).filter((question) => question.status !== 'draft').slice(0, configuredCompetition.questionCount);
-      const quizQuestions = configuredQuestions.length ? configuredQuestions : questions.slice(0, configuredCompetition.questionCount).map((question, index) => ({ id: `default-${index + 1}`, question: question.q, options: question.opts }));
+      const quizQuestions = configuredQuestions.length ? configuredQuestions : fallbackQuestions(configuredCompetition.questionCount);
       const activeCompetition = { ...configuredCompetition, questionCount: quizQuestions.length };
+      await updateAccountProfile(account.accountId, phone, classLevel);
       const newParticipant = {
-        id: randomUUID(), accountId: account.accountId, name: data.name.trim(),
+        id: randomUUID(), accountId: account.accountId, name: data.name.trim(), username: account.username,
         competitionId: activeCompetition.id,
-        email: account.email,
+        email: '',
         phone,
+        classLevel,
         registeredAt: new Date().toISOString(),
       };
+      const attemptReserved = await reserveParticipantAttempt(account.accountId, activeCompetition.id);
+      if (!attemptReserved) return send(res, 409, { error: 'You have already used your one entry for this competition. Each signed-in account gets one attempt.' });
       let participant;
-      participant = await insertParticipant(newParticipant);
-      return send(res, 201, { participant: { id: participant.id, name: participant.name }, competition: activeCompetition, questions: quizQuestions.map((question) => ({ id: question.id, q: question.question, opts: question.options })) });
+      try {
+        participant = await insertParticipant(newParticipant);
+      } catch (error) {
+        await releaseParticipantAttempt(account.accountId, activeCompetition.id);
+        throw error;
+      }
+      return send(res, 201, { participant: { id: participant.id, name: participant.name }, competition: activeCompetition, questions: quizQuestions.map((question) => ({ id: question.id, q: question.question, type: 'short_answer' })) });
     }
     if (req.method === 'POST' && url.pathname === '/api/submissions') {
       const data = await readJson(req);
@@ -646,14 +741,21 @@ createServer(async (req, res) => {
       if (!participant) return send(res, 404, { error: 'Participant not found.' });
       const configuredCompetition = (await allCompetitions()).find((item) => item.id === participant.competitionId) || defaultCompetition;
       const configuredQuestions = (await questionsFor(configuredCompetition.id)).filter((question) => question.status !== 'draft').slice(0, configuredCompetition.questionCount);
-      const activeQuestions = configuredQuestions.length ? configuredQuestions : questions.slice(0, configuredCompetition.questionCount);
+      const activeQuestions = configuredQuestions.length ? configuredQuestions : fallbackQuestions(configuredCompetition.questionCount);
       const activeCompetition = { ...configuredCompetition, questionCount: activeQuestions.length };
-      if (!Array.isArray(data.answers) || data.answers.length !== activeQuestions.length || data.answers.some((answer) => answer !== null && (!Number.isInteger(answer) || answer < 0 || answer > 3))) {
-        return send(res, 400, { error: `Submit one answer or a blank for each of the ${activeQuestions.length} questions.` });
+      if (!Array.isArray(data.answers) || data.answers.length !== activeQuestions.length || data.answers.some((answer) => answer !== null && (typeof answer !== 'string' || answer.length > 2000))) {
+        return send(res, 400, { error: `Submit one written answer or a blank for each of the ${activeQuestions.length} questions.` });
       }
       const existingSubmissions = await allSubmissions();
-      if (existingSubmissions.some((item) => item.participantId === participant.id)) return send(res, 409, { error: 'A submission has already been recorded for this participant.' });
-      const score = data.answers.reduce((sum, answer, index) => sum + (answer === (configuredQuestions.length ? configuredQuestions[index].correctIndex : answerKey[index]) ? 1 : 0), 0);
+      const accountParticipants = new Set(people.filter((item) => participant.accountId && item.accountId === participant.accountId && item.competitionId === participant.competitionId).map((item) => item.id));
+      accountParticipants.add(participant.id);
+      if (existingSubmissions.some((item) => accountParticipants.has(item.participantId))) return send(res, 409, { error: 'Your one attempt for this competition has already been submitted.' });
+      const score = data.answers.reduce((sum, answer, index) => {
+        const question = activeQuestions[index];
+        const accepted = question.acceptedAnswers?.length ? question.acceptedAnswers : [];
+        const normalized = normalizeAnswer(answer);
+        return sum + (normalized && accepted.some((candidate) => normalized === normalizeAnswer(candidate)) ? 1 : 0);
+      }, 0);
       const newSubmission = {
         id: randomUUID(), participantId: participant.id, score,
         elapsedSeconds: Number.isInteger(data.elapsedSeconds) ? Math.max(0, Math.min(activeCompetition.durationMinutes * 60, data.elapsedSeconds)) : 0,
@@ -691,14 +793,19 @@ createServer(async (req, res) => {
     const duplicateEventAccount = error?.code === '23505' && error?.message?.includes('participants_account_competition_unique');
     if (duplicateEventAccount) message = 'The database still has the one-entry-per-account rule enabled. Run supabase/migrations/202611120006_allow_shared_event_emails.sql in the Supabase SQL Editor, then try again.';
     const accountSchemaMissing = url.pathname.startsWith('/api/account/') && ['PGRST205', 'PGRST204', '42P01'].includes(error?.code);
-    if (accountSchemaMissing) message = 'User account storage is not set up yet. Run supabase/migrations/202611120004_user_accounts.sql in the Supabase SQL Editor, then restart the backend.';
+    const usernameSchemaMissing = ['42703', 'PGRST204'].includes(error?.code) && ['username', 'class_level'].some((column) => String(error?.message || '').includes(column));
+    const attemptSchemaMissing = ['42P01', 'PGRST205'].includes(error?.code) && String(error?.message || '').includes('participant_attempts');
+    if (usernameSchemaMissing && (url.pathname.startsWith('/api/account/') || url.pathname === '/api/admin/participants' || url.pathname === '/api/participants')) message = 'Username, phone and class fields are not set up yet. Run supabase/migrations/202611130002_username_phone_class_accounts.sql in the Supabase SQL Editor, then restart the backend.';
+    else if (attemptSchemaMissing && url.pathname === '/api/participants') message = 'Run supabase/migrations/202611140003_one_attempt_per_account.sql in the Supabase SQL Editor, then retry.';
+    else if (accountSchemaMissing) message = 'User account storage is not set up yet. Run supabase/migrations/202611120004_user_accounts.sql in the Supabase SQL Editor, then restart the backend.';
     else if (url.pathname.startsWith('/api/account/')) message = error?.message || message;
     if (url.pathname.startsWith('/api/admin/questions') && isAdmin(req)) {
-      if (['PGRST205', 'PGRST204', '42703'].includes(error?.code)) message = 'Question storage is missing required columns or tables. Run the John quiz.com competition and question bank migrations in Supabase, then restart the backend.';
+      if (['PGRST204', '42703'].includes(error?.code) && ['accepted_answers', 'question_type'].some((column) => String(error?.message || '').includes(column))) message = 'Run supabase/migrations/202611140001_short_answer_law_questions.sql in the Supabase SQL Editor, then restart the backend.';
+      else if (['PGRST205', 'PGRST204', '42703'].includes(error?.code)) message = 'Question storage is missing required columns or tables. Run the John quiz.com competition and question bank migrations in Supabase, then restart the backend.';
       else message = `Question import failed${error?.code ? ` (${error.code})` : ''}: ${error?.message || 'check the question schema and try again.'}`;
     }
     console.error(error);
-    return send(res, accountSchemaMissing ? 503 : duplicateEventAccount ? 409 : 400, { error: message });
+    return send(res, accountSchemaMissing || usernameSchemaMissing ? 503 : duplicateEventAccount ? 409 : 400, { error: message });
   }
 }).listen(port, '0.0.0.0', () => {
   const mode = supabase ? 'Supabase' : 'local JSON fallback';
