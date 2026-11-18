@@ -10,7 +10,8 @@ dotenv.config({ path: path.join(path.dirname(fileURLToPath(import.meta.url)), '.
 
 const port = Number(process.env.API_PORT || 3001);
 const maxQuestions = 50;
-const dataDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'data');
+const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.LAMBDA_TASK_ROOT);
+const dataDir = isServerless ? path.join('/tmp', 'data') : path.join(path.dirname(fileURLToPath(import.meta.url)), 'data');
 const dataFile = path.join(dataDir, 'store.json');
 const defaultCompetition = { id: '00000000-0000-4000-8000-000000000048', title: 'The Ultimate Knowledge Sprint', description: 'Law students · Legal reasoning', questionCount: 20, durationMinutes: 10, maxParticipants: 1000, rules: 'Answer each question in writing. Highest score wins; ties are broken by fastest completion time.', prize: '₵2,500', entryCode: 'JQ-000048', isPublished: true, status: 'active', createdAt: new Date(0).toISOString() };
 const adminEmail = process.env.ADMIN_EMAIL || 'admin@johnquiz.com';
@@ -21,13 +22,22 @@ const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_SECRET_KEY
   ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SECRET_KEY, { auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false } })
   : null;
 
-await mkdir(dataDir, { recursive: true });
+try {
+  await mkdir(dataDir, { recursive: true });
+} catch {
+  // Read-only filesystem fallback
+}
+
 let store;
 try {
   store = JSON.parse(await readFile(dataFile, 'utf8'));
 } catch {
-  store = { participants: [], submissions: [] };
-  await writeFile(dataFile, JSON.stringify(store, null, 2));
+  store = { participants: [], submissions: [], accounts: [] };
+  try {
+    await writeFile(dataFile, JSON.stringify(store, null, 2));
+  } catch {
+    // Read-only filesystem fallback
+  }
 }
 store.participants ||= [];
 store.submissions ||= [];
@@ -43,7 +53,13 @@ for (const account of store.accounts) {
   account.phone ||= store.participants.find((person) => person.accountId === account.id && person.phone)?.phone || '';
   account.classLevel ||= '';
 }
-const persist = () => writeFile(dataFile, JSON.stringify(store, null, 2));
+const persist = async () => {
+  try {
+    await writeFile(dataFile, JSON.stringify(store, null, 2));
+  } catch {
+    // Read-only filesystem
+  }
+};
 
 function derivePassword(password, salt) {
   return new Promise((resolve, reject) => {
@@ -385,6 +401,16 @@ function createAdminToken() {
 }
 
 async function readJson(req) {
+  if (req.body !== undefined && req.body !== null) {
+    if (typeof req.body === 'object') return req.body;
+    if (typeof req.body === 'string') {
+      try {
+        return JSON.parse(req.body || '{}');
+      } catch {
+        return {};
+      }
+    }
+  }
   let raw = '';
   for await (const chunk of req) {
     raw += chunk;
@@ -393,8 +419,28 @@ async function readJson(req) {
   return JSON.parse(raw || '{}');
 }
 
-createServer(async (req, res) => {
+export async function handleRequest(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  if (url.searchParams.has('__route')) {
+    const route = url.searchParams.get('__route');
+    url.searchParams.delete('__route');
+    url.pathname = route.startsWith('/') ? `/api${route}` : `/api/${route}`;
+  } else if (req.headers['x-matched-path'] && req.headers['x-matched-path'].startsWith('/api') && !req.headers['x-matched-path'].includes('/api/index')) {
+    url.pathname = req.headers['x-matched-path'];
+  }
+  if (url.pathname.length > 1 && url.pathname.endsWith('/')) {
+    url.pathname = url.pathname.slice(0, -1);
+  }
   try {
     if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { status: 'ok', service: 'john-quiz-api', accountAuth: true });
     if (req.method === 'POST' && ['/api/account/signup', '/api/account/login'].includes(url.pathname)) {
@@ -807,8 +853,13 @@ createServer(async (req, res) => {
     console.error(error);
     return send(res, accountSchemaMissing || usernameSchemaMissing ? 503 : duplicateEventAccount ? 409 : 400, { error: message });
   }
-}).listen(port, '0.0.0.0', () => {
-  const mode = supabase ? 'Supabase' : 'local JSON fallback';
-  console.log(`John quiz.com API listening on http://localhost:${port} (${mode})`);
-  if (!supabase) console.log('Set SUPABASE_URL and SUPABASE_SECRET_KEY in .env to use your Supabase project.');
-});
+}
+
+const isDirectExecution = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+if (isDirectExecution && !process.env.VERCEL) {
+  createServer(handleRequest).listen(port, '0.0.0.0', () => {
+    const mode = supabase ? 'Supabase' : 'local JSON fallback';
+    console.log(`John quiz.com API listening on http://localhost:${port} (${mode})`);
+    if (!supabase) console.log('Set SUPABASE_URL and SUPABASE_SECRET_KEY in .env to use your Supabase project.');
+  });
+}

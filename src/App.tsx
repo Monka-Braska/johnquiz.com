@@ -229,8 +229,8 @@ function readPublicHomeCache(): PublicHomePayload | null {
     return data?.competition?.id && Array.isArray(data.competitions) && data?.settings?.platformName ? data : null;
   } catch { return null; }
 }
-function fetchPublicHome() {
-  if (publicHomeCache && publicHomeCache.expiresAt > Date.now()) return Promise.resolve(publicHomeCache.data);
+function fetchPublicHome(forceRefresh = false) {
+  if (!forceRefresh && publicHomeCache && publicHomeCache.expiresAt > Date.now()) return Promise.resolve(publicHomeCache.data);
   if (publicHomeRequest) return publicHomeRequest;
   publicHomeRequest = fetch("/api/public/home").then((response) => response.ok ? response.json() : Promise.reject())
     .then((data: PublicHomePayload) => {
@@ -251,10 +251,13 @@ function usePublicCompetition() {
   });
   useEffect(() => {
     let active = true;
-    fetchPublicHome()
+    const refresh = () => fetchPublicHome(true)
       .then((result) => { if (active) setData({ competition: result.competition, participants: result.participants, submissions: result.submissions, loaded: true }); })
       .catch(() => { if (active) setData((old) => ({ ...old, loaded: true })); });
-    return () => { active = false; };
+    void refresh();
+    const interval = window.setInterval(() => { void refresh(); }, 30000);
+    window.addEventListener("focus", refresh);
+    return () => { active = false; window.clearInterval(interval); window.removeEventListener("focus", refresh); };
   }, []);
   return data;
 }
@@ -264,10 +267,13 @@ function usePublicCompetitions() {
   const [loaded, setLoaded] = useState(() => Boolean(readPublicHomeCache()));
   useEffect(() => {
     let active = true;
-    fetchPublicHome()
+    const refresh = () => fetchPublicHome(true)
       .then((data) => { if (active) { setItems(data.competitions || []); setLoaded(true); } })
       .catch(() => { if (active) setLoaded(true); });
-    return () => { active = false; };
+    void refresh();
+    const interval = window.setInterval(() => { void refresh(); }, 30000);
+    window.addEventListener("focus", refresh);
+    return () => { active = false; window.clearInterval(interval); window.removeEventListener("focus", refresh); };
   }, []);
   return { items, loaded };
 }
@@ -377,6 +383,7 @@ function PublicShell({ children }: { children: React.ReactNode }) {
           <b>Platform</b>
           <button onClick={() => go("register")}>Current competition</button>
           <button onClick={() => go("leaderboard")}>Leaderboard</button>
+          <button onClick={() => go("login")}>Admin Portal</button>
         </div>
         <div>
           <b>Support</b>
@@ -1502,6 +1509,7 @@ function CreateCompetition({ editing = false }: { editing?: boolean }) {
             });
             const result = await response.json();
             if (!response.ok) throw new Error(result.error || "Could not create this quiz.");
+            void fetchPublicHome(true).catch(() => {});
             setSaved(true);
             window.setTimeout(() => go("competitions"), 800);
           } catch (requestError) {
@@ -2504,6 +2512,8 @@ function SettingsPage() {
 
 function Login() {
   const [show, setShow] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
   return (
     <div className="login-page">
       <div className="login-brand">
@@ -2524,10 +2534,32 @@ function Login() {
         </small>
       </div>
       <div className="login-panel">
-        <ThemeToggle />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", marginBottom: "1rem" }}>
+          <button
+            type="button"
+            onClick={() => go("home")}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              color: "var(--muted, #64748b)",
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+              fontSize: "0.875rem",
+              padding: "0.25rem 0",
+              fontWeight: 500
+            }}
+          >
+            ← Back to website
+          </button>
+          <ThemeToggle />
+        </div>
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            setError("");
+            setLoading(true);
             const form = e.currentTarget;
             const email = (form.elements.namedItem("email") as HTMLInputElement).value;
             const password = (form.elements.namedItem("password") as HTMLInputElement).value;
@@ -2536,12 +2568,18 @@ function Login() {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ email, password }),
             }).then(async (response) => {
-              const result = await response.json();
+              const result = await response.json().catch(() => ({}));
               if (!response.ok) throw new Error(result.error || "Sign in failed.");
               sessionStorage.setItem("adminToken", result.token);
-              sessionStorage.setItem("adminEmail", result.admin.email);
+              sessionStorage.setItem("adminEmail", result.admin?.email || email);
               go("dashboard");
-            }).catch((error: Error) => window.alert(error.message || "Could not reach the backend server."));
+            }).catch((err: Error) => {
+              const msg = err.message || "Could not reach the backend server.";
+              setError(msg);
+              window.alert(msg);
+            }).finally(() => {
+              setLoading(false);
+            });
           }}
         >
           <span className="mobile-login-logo">
@@ -2549,21 +2587,26 @@ function Login() {
           </span>
           <h1>Welcome back</h1>
           <p>Sign in to your administrator workspace.</p>
+          {error && (
+            <div style={{ color: "#ef4444", background: "rgba(239, 68, 68, 0.1)", border: "1px solid rgba(239, 68, 68, 0.2)", padding: "0.75rem 1rem", borderRadius: "0.5rem", marginBottom: "1rem", fontSize: "0.875rem" }}>
+              {error}
+            </div>
+          )}
           <label>
             Email address
-            <input required name="email" type="email" placeholder="admin@johnquiz.com" />
+            <input required name="email" type="email" placeholder="admin@johnquiz.com" defaultValue="admin@johnquiz.com" />
           </label>
           <label>
             Password
             <div className="password-field">
-              <input required name="password" type={show ? "text" : "password"} />
-              <button type="button" onClick={() => setShow(!show)}>
+              <input required name="password" type={show ? "text" : "password"} placeholder="Enter admin password" />
+              <button type="button" onClick={() => setShow(!show)} aria-label="Toggle password visibility">
                 <Icon name="eye" />
               </button>
             </div>
           </label>
-          <Button type="submit" icon="arrow">
-            Sign in securely
+          <Button type="submit" icon="arrow" disabled={loading}>
+            {loading ? "Signing in..." : "Sign in securely"}
           </Button>
           <small>
             <Icon name="shield" /> Protected by secure authentication
@@ -2574,8 +2617,13 @@ function Login() {
   );
 }
 
+function isAdminRoute() {
+  const path = window.location.pathname.toLowerCase();
+  return path === "/admin" || path.startsWith("/admin/") || path === "/login";
+}
+
 export default function App() {
-  const [screen, setScreen] = useState<Screen>(() => window.location.pathname.startsWith("/admin") ? (sessionStorage.getItem("adminToken") ? "dashboard" : "login") : "home");
+  const [screen, setScreen] = useState<Screen>(() => isAdminRoute() ? (sessionStorage.getItem("adminToken") ? "dashboard" : "login") : "home");
   const [theme, setTheme] = useState<"light" | "dark">(() => localStorage.getItem("johnquiz-theme") === "dark" ? "dark" : "light");
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -2594,7 +2642,7 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
   useEffect(() => {
-    const handlePopState = () => setScreen(window.location.pathname.startsWith("/admin") ? (sessionStorage.getItem("adminToken") ? "dashboard" : "login") : "home");
+    const handlePopState = () => setScreen(isAdminRoute() ? (sessionStorage.getItem("adminToken") ? "dashboard" : "login") : "home");
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
