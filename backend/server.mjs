@@ -514,11 +514,13 @@ export async function handleRequest(req, res) {
       }
       if (req.method === 'GET' && url.pathname === '/api/admin/questions') {
         const selectedCompetition = url.searchParams.get('competitionId') || (await currentCompetition()).id;
-        return send(res, 200, { questions: await questionsFor(selectedCompetition) });
+        return send(res, 200, { competitionId: selectedCompetition, questions: await questionsFor(selectedCompetition) });
       }
       if (req.method === 'POST' && url.pathname === '/api/admin/questions') {
         const data = await readJson(req);
         const targetCompetitionId = data.competitionId || (await currentCompetition()).id;
+        const targetCompetition = (await allCompetitions()).find((competition) => competition.id === targetCompetitionId);
+        if (!targetCompetition) return send(res, 404, { error: 'Target competition not found.' });
         const text = typeof data.question === 'string' ? data.question.trim() : '';
         const rawAnswers = Array.isArray(data.acceptedAnswers) ? data.acceptedAnswers : String(data.correctAnswer || '').split(/[;\n]+/);
         const acceptedAnswers = [...new Set(rawAnswers.map((answer) => String(answer).trim()).filter(Boolean))];

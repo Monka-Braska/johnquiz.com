@@ -1459,6 +1459,8 @@ function Competitions() {
             <span className="competition-dates"><b>{c.startAt ? new Date(c.startAt).toLocaleString() : "Opens immediately"}</b><small>{c.endAt ? `Closes ${new Date(c.endAt).toLocaleString()}` : "No closing time"}</small><small><EventCountdown event={c} /></small></span>
             <span>{c.isPublished ? "Published" : "Unpublished"}</span>
             <span className="table-actions">
+              <button onClick={() => { selectedCompetitionId = c.id; go("questions"); }} title="View and edit question bank for this quiz">Questions</button>
+              <button onClick={() => { selectedCompetitionId = c.id; go("upload"); }} title="Bulk upload questions for this quiz">Upload</button>
               <button onClick={() => { selectedCompetitionId = c.id; go("edit"); }}>Edit</button>
               <button className="text-danger" onClick={() => void remove(c)}>Delete</button>
             </span>
@@ -1623,6 +1625,8 @@ function CreateCompetition({ editing = false }: { editing?: boolean }) {
 }
 
 function Questions() {
+  const [competitions, setCompetitions] = useState<PublicCompetition[]>([]);
+  const [selectedCompId, setSelectedCompId] = useState(() => selectedCompetitionId || "");
   const [rows, setRows] = useState<Array<{ id: string; question: string; acceptedAnswers: string[]; category: string; marks: number; explanation: string; status: string }>>([]);
   const [preview, setPreview] = useState<(typeof rows)[number] | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -1631,13 +1635,42 @@ function Questions() {
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
-  const loadQuestions = () => adminFetch("/api/admin/questions", { headers: { Authorization: `Bearer ${sessionStorage.getItem("adminToken") || ""}` } })
-    .then((response) => response.ok ? response.json() : Promise.reject())
-    .then((data) => setRows(data.questions || []))
-    .catch(() => setRows([]));
-  useEffect(() => { void loadQuestions(); }, []);
+
+  const loadQuestions = (targetId?: string) => {
+    const id = targetId || selectedCompId;
+    if (!id) return Promise.resolve();
+    return adminFetch(`/api/admin/questions?competitionId=${id}`, { headers: { Authorization: `Bearer ${sessionStorage.getItem("adminToken") || ""}` } })
+      .then((response) => response.ok ? response.json() : Promise.reject())
+      .then((data) => setRows(data.questions || []))
+      .catch(() => setRows([]));
+  };
+
+  useEffect(() => {
+    adminFetch("/api/admin/competitions", { headers: { Authorization: `Bearer ${sessionStorage.getItem("adminToken") || ""}` } })
+      .then((res) => res.ok ? res.json() : Promise.reject())
+      .then((data) => {
+        const comps: PublicCompetition[] = data.competitions || [];
+        setCompetitions(comps);
+        const active = (selectedCompetitionId && comps.find((c) => c.id === selectedCompetitionId)) || comps.find((c) => c.status === "active") || comps[0];
+        if (active) {
+          setSelectedCompId(active.id);
+          selectedCompetitionId = active.id;
+          void loadQuestions(active.id);
+        }
+      })
+      .catch(() => setError("Could not load competitions."));
+  }, []);
+
+  const handleCompetitionChange = (id: string) => {
+    setSelectedCompId(id);
+    selectedCompetitionId = id;
+    void loadQuestions(id);
+  };
+
   const categories = [...new Set(rows.map((row) => row.category))];
   const filteredRows = rows.filter((row) => row.question.toLowerCase().includes(search.toLowerCase()) && (categoryFilter === "all" || row.category === categoryFilter) && (statusFilter === "all" || row.status === statusFilter));
+  const activeComp = competitions.find((c) => c.id === selectedCompId);
+
   return (
     <AdminShell
       screen="questions"
@@ -1645,15 +1678,37 @@ function Questions() {
       subtitle="Create law questions that require students to write a direct answer."
       action={
         <div className="button-row">
-          <Button kind="ghost" icon="upload" onClick={() => go("upload")}>
+          <Button kind="ghost" icon="upload" onClick={() => { selectedCompetitionId = selectedCompId; go("upload"); }}>
             Bulk upload
           </Button>
-          <Button icon="plus" onClick={() => setCreateOpen(true)}>
+          <Button icon="plus" onClick={() => setCreateOpen(true)} disabled={!selectedCompId}>
             Add question
           </Button>
         </div>
       }
     >
+      <div className="surface" style={{ padding: "16px 20px", marginBottom: "20px", borderRadius: "12px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px", flexWrap: "wrap", border: "1px solid var(--border, #344054)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+          <span style={{ fontWeight: 600, fontSize: "14px", display: "flex", alignItems: "center", gap: "6px" }}>
+            <Icon name="trophy" /> Active Competition:
+          </span>
+          <select
+            value={selectedCompId}
+            onChange={(e) => handleCompetitionChange(e.target.value)}
+            style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid var(--border, #344054)", background: "var(--surface, #1e293b)", color: "inherit", fontWeight: 600, fontSize: "14px", minWidth: "280px" }}
+          >
+            {!competitions.length && <option value="">Loading competitions...</option>}
+            {competitions.map((comp) => (
+              <option key={comp.id} value={comp.id}>
+                {comp.title} ({comp.status}) — {comp.questionCount} questions configured
+              </option>
+            ))}
+          </select>
+        </div>
+        <div style={{ fontSize: "13px", color: "var(--muted, #94a3b8)" }}>
+          <b>{rows.length}</b> / 50 questions saved for this quiz
+        </div>
+      </div>
       <div className="category-stats">
         <div>
             <b>{rows.length}</b>
@@ -1723,7 +1778,7 @@ function Questions() {
             </span>
           </div>
         ))}
-        {!filteredRows.length && <div className="empty-state">No saved questions for this quiz yet.</div>}
+        {!filteredRows.length && <div className="empty-state">No saved questions for {activeComp?.title || "this quiz"} yet.</div>}
       </div>
       {preview && (
         <div className="modal-backdrop">
@@ -1749,13 +1804,21 @@ function Questions() {
               void adminFetch("/api/admin/questions", {
                 method: "POST",
                 headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionStorage.getItem("adminToken") || ""}` },
-                body: JSON.stringify({ question: values.get("question"), acceptedAnswers, category: values.get("category"), marks: values.get("marks"), explanation: values.get("explanation"), status: values.get("status") }),
+                body: JSON.stringify({
+                  competitionId: selectedCompId,
+                  question: values.get("question"),
+                  acceptedAnswers,
+                  category: values.get("category"),
+                  marks: values.get("marks"),
+                  explanation: values.get("explanation"),
+                  status: values.get("status")
+                }),
               }).then(async (response) => {
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.error || "Could not save this question.");
                 setCreateOpen(false);
                 setCreated(true);
-                void loadQuestions();
+                void loadQuestions(selectedCompId);
               }).catch((requestError) => setError(requestError instanceof Error ? requestError.message : "Could not reach the backend."));
             }}
           >
@@ -1764,7 +1827,9 @@ function Questions() {
             </button>
             <span className="eyebrow">NEW QUESTION</span>
             <h2>Add a question</h2>
-            <p>Write a law question and provide the answer text used to mark written responses.</p>
+            <p>
+              Saving to quiz: <strong style={{ color: "var(--primary, #7c3aed)" }}>{activeComp?.title || "Selected competition"}</strong>
+            </p>
             <label>
               Question text *
               <textarea required name="question" rows={3} placeholder="Enter the question participants will see" />
@@ -1862,7 +1927,7 @@ function UploadQuestions() {
     [importSummary, setImportSummary] = useState<{ imported: number; skippedDuplicates: number } | null>(null),
     [parsedQuestions, setParsedQuestions] = useState<ReturnType<typeof parseQuestionCsv>>([]),
     [competitions, setCompetitions] = useState<PublicCompetition[]>([]),
-    [uploadTargetId, setUploadTargetId] = useState(""),
+    [uploadTargetId, setUploadTargetId] = useState(() => selectedCompetitionId || ""),
     [uploading, setUploading] = useState(false);
   useEffect(() => {
     adminFetch("/api/admin/competitions", { headers: { Authorization: `Bearer ${sessionStorage.getItem("adminToken") || ""}` } })
@@ -1870,7 +1935,11 @@ function UploadQuestions() {
       .then((data) => {
         const items: PublicCompetition[] = data.competitions || [];
         setCompetitions(items);
-        setUploadTargetId((items.find((item) => item.status === "active") || items[0])?.id || "");
+        const preferred = (selectedCompetitionId && items.find((item) => item.id === selectedCompetitionId)) || items.find((item) => item.status === "active") || items[0];
+        if (preferred) {
+          setUploadTargetId(preferred.id);
+          selectedCompetitionId = preferred.id;
+        }
       }).catch(() => setFileError("Could not load competitions. Sign in again and retry."));
   }, []);
   async function chooseFile(selected?: File) {
@@ -1930,12 +1999,27 @@ function UploadQuestions() {
     >
       <div className="upload-layout">
         <div className="surface upload-card">
-          <label className="upload-event-select">Add questions to
-            <select value={uploadTargetId} onChange={(event) => setUploadTargetId(event.target.value)} required>
+          <label className="upload-event-select">Target competition for this upload *
+            <select
+              value={uploadTargetId}
+              onChange={(event) => {
+                setUploadTargetId(event.target.value);
+                selectedCompetitionId = event.target.value;
+                setImportSummary(null);
+                setProgress(0);
+              }}
+              required
+            >
               {!competitions.length && <option value="">No competitions available</option>}
               {competitions.map((competition) => <option key={competition.id} value={competition.id}>{competition.title} · {competition.status}</option>)}
             </select>
           </label>
+          <div style={{ padding: "10px 14px", background: "rgba(105, 65, 198, 0.08)", borderRadius: "8px", fontSize: "13px", color: "var(--text, inherit)", marginBottom: "16px", display: "flex", alignItems: "center", gap: "8px", border: "1px solid rgba(105, 65, 198, 0.2)" }}>
+            <Icon name="shield" />
+            <span>
+              Target Quiz: <strong>{competitions.find((c) => c.id === uploadTargetId)?.title || "Selected competition"}</strong>. Questions uploaded here belong strictly to this quiz and will not affect other competitions.
+            </span>
+          </div>
           <div className="upload-steps">
             <span className="active">
               <i>1</i>Upload
@@ -2013,7 +2097,15 @@ function UploadQuestions() {
               <Icon name="check" />
               <div>
                 <b>{importSummary?.imported ?? parsedQuestions.length} questions imported</b>
-                <p>{importSummary?.skippedDuplicates ? `${importSummary.skippedDuplicates} existing duplicate questions were skipped. ` : ""}They are saved to {competitions.find((item) => item.id === uploadTargetId)?.title || "the selected quiz"} and appear in its question bank.</p>
+                <p>{importSummary?.skippedDuplicates ? `${importSummary.skippedDuplicates} existing duplicate questions were skipped. ` : ""}They are saved to <strong>{competitions.find((item) => item.id === uploadTargetId)?.title || "the selected quiz"}</strong> and appear in its question bank.</p>
+                <div style={{ marginTop: "12px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                  <Button onClick={() => { selectedCompetitionId = uploadTargetId; go("questions"); }}>
+                    View in Question Bank
+                  </Button>
+                  <Button kind="ghost" onClick={() => { setFile(false); setFileName(""); setFileError(""); setProgress(0); setImportSummary(null); setParsedQuestions([]); }}>
+                    Upload more questions
+                  </Button>
+                </div>
               </div>
             </div>
           )}
