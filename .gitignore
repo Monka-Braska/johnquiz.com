@@ -21,3 +21,6 @@ backend/data/
 # beside it.
 /.plugins/
 /.opencode-skills/
+
+# Local Remotion workspace
+my-video/
