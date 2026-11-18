@@ -386,7 +386,6 @@ function PublicShell({ children }: { children: React.ReactNode }) {
           <b>Platform</b>
           <button onClick={() => go("register")}>Current competition</button>
           <button onClick={() => go("leaderboard")}>Leaderboard</button>
-          <button onClick={() => go("login")}>Admin Portal</button>
         </div>
         <div>
           <b>Support</b>
