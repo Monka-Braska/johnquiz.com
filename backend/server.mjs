@@ -10,6 +10,9 @@ dotenv.config({ path: path.join(path.dirname(fileURLToPath(import.meta.url)), '.
 
 const port = Number(process.env.API_PORT || 3001);
 const maxQuestions = 50;
+function phoneDigitCount(value) {
+  return (String(value || '').match(/\p{Nd}/gu) || []).length;
+}
 const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.LAMBDA_TASK_ROOT);
 const dataDir = isServerless ? path.join('/tmp', 'data') : path.join(path.dirname(fileURLToPath(import.meta.url)), 'data');
 const dataFile = path.join(dataDir, 'store.json');
@@ -452,7 +455,7 @@ export async function handleRequest(req, res) {
       if (!password) return send(res, 400, { error: 'Enter your password.' });
       const phone = typeof data.phone === 'string' ? data.phone.trim() : '';
       const classLevel = typeof data.classLevel === 'string' ? data.classLevel.trim() : '';
-      if (url.pathname.endsWith('/signup') && phone.replace(/\D/g, '').length < 7) return send(res, 400, { error: 'Enter a valid phone number with at least 7 digits.' });
+      if (url.pathname.endsWith('/signup') && phoneDigitCount(phone) < 7) return send(res, 400, { error: 'Enter a phone number with at least 7 digits.' });
       if (url.pathname.endsWith('/signup') && (classLevel.length < 2 || classLevel.length > 60)) return send(res, 400, { error: 'Enter your class or level (2–60 characters).'});
       let account = await findAccount(username);
       if (url.pathname.endsWith('/signup')) {
@@ -743,7 +746,7 @@ export async function handleRequest(req, res) {
       if (!account) return send(res, 401, { error: 'Sign in with your username and password to continue.' });
       if (typeof data.name !== 'string' || data.name.trim().length < 2) return send(res, 400, { error: 'Please provide your full name.' });
       const phone = typeof data.phone === 'string' ? data.phone.trim() : '';
-      if (phone.replace(/\D/g, '').length < 7) return send(res, 400, { error: 'Enter a valid contact phone number (at least 7 digits).'});
+      if (phoneDigitCount(phone) < 7) return send(res, 400, { error: 'Enter a contact phone number with at least 7 digits.' });
       const classLevel = typeof data.classLevel === 'string' ? data.classLevel.trim() : '';
       if (classLevel.length < 2 || classLevel.length > 60) return send(res, 400, { error: 'Enter your class or level (2–60 characters).'});
       const competitions = await allCompetitions();

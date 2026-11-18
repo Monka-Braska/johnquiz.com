@@ -201,6 +201,9 @@ function Logo({ dark = false, brandName = "John quiz.com" }: { dark?: boolean; b
 
 let globalGo: (screen: Screen) => void = () => {};
 const go = (screen: Screen) => globalGo(screen);
+function phoneDigitCount(value: string) {
+  return (String(value || '').match(/\p{Nd}/gu) || []).length;
+}
 async function adminFetch(input: RequestInfo | URL, init?: RequestInit) {
   const response = await fetch(input, init);
   if (response.status === 401) {
@@ -615,6 +618,11 @@ function Registration() {
   }, []);
   async function authenticate(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError("");
+    if (accountMode === "signup" && phoneDigitCount(phone) < 7) {
+      setError("Enter a phone number with at least 7 digits.");
+      setBusy(false);
+      return;
+    }
     try {
       const response = await fetch(`/api/account/${accountMode}`, {
         method: "POST",
@@ -636,6 +644,11 @@ function Registration() {
   }
   async function registerParticipant(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError("");
+    if (phoneDigitCount(phone) < 7) {
+      setError("Enter a contact phone number with at least 7 digits.");
+      setBusy(false);
+      return;
+    }
     try {
       const response = await fetch("/api/participants", {
         method: "POST",
@@ -689,7 +702,7 @@ function Registration() {
             <label>Username *<input required minLength={3} maxLength={24} pattern="[A-Za-z0-9_.-]{3,24}" autoComplete="username" value={accountUsername} onChange={(event) => setAccountUsername(event.target.value)} placeholder="e.g. jordan_24" /></label>
             <label>Password *<input required minLength={accountMode === "signup" ? 8 : undefined} type="password" autoComplete={accountMode === "signup" ? "new-password" : "current-password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder={accountMode === "signup" ? "At least 8 characters" : "Your password"} /></label>
             {accountMode === "signup" && <>
-              <label>Phone number *<input required type="tel" autoComplete="tel" minLength={7} value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+233 20 000 0000" /></label>
+              <label>Phone number *<input required type="tel" inputMode="tel" autoComplete="tel" value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+233 20 000 0000" /><small className="field-hint">At least 7 digits. Spaces and + are fine.</small></label>
               <label>Class or level *<input required minLength={2} maxLength={60} value={classLevel} onChange={(event) => setClassLevel(event.target.value)} placeholder="e.g. JHS 2 or Level 100" /></label>
             </>}
             {error && <p className="form-error">{error}</p>}
@@ -699,7 +712,7 @@ function Registration() {
             <div className="form-title"><span className="form-icon"><Icon name="users" /></span><div><h2>Participant details</h2><p>Signed in as @{accountUsername}</p></div></div>
             <div className="participant-profile-summary"><span>PLAYER PROFILE</span><b>@{accountUsername}</b><p>{phone || "Phone not set"} · {classLevel || "Class or level not set"}</p></div>
             <label>Full name *<input required minLength={2} autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Jordan Williams" /></label>
-            <label>Contact phone number *<input required type="tel" autoComplete="tel" minLength={7} value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+233 20 000 0000" /><small className="field-hint">Saved to your player profile and visible to the administrator.</small></label>
+            <label>Contact phone number *<input required type="tel" inputMode="tel" autoComplete="tel" value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+233 20 000 0000" /><small className="field-hint">At least 7 digits. Saved to your player profile and visible to the administrator.</small></label>
             <label>Class or level *<input required minLength={2} maxLength={60} value={classLevel} onChange={(event) => setClassLevel(event.target.value)} placeholder="e.g. JHS 2 or Level 100" /></label>
             <label>Competition entry code *<input required value={entryCode} onChange={(event) => setEntryCode(event.target.value.toUpperCase())} placeholder="JQ-A1B2C3" /></label>
             <label className="checkbox"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /><span>I agree to the <u>competition rules</u> and consent to my score and abbreviated name appearing on the public leaderboard.</span></label>
