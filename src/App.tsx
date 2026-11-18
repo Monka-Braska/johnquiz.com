@@ -378,6 +378,9 @@ function PublicShell({ children }: { children: React.ReactNode }) {
         <div>
           <Logo dark brandName={settings.platformName} />
           <p>Fair competition. Fast thinking. Real rewards.</p>
+          <small style={{ marginTop: "auto", color: "#667085" }}>
+            Powered by <strong style={{ color: "#98a2b3" }}>LinvanX</strong>
+          </small>
         </div>
         <div>
           <b>Platform</b>
@@ -394,6 +397,9 @@ function PublicShell({ children }: { children: React.ReactNode }) {
           <b>Follow</b>
           <span>LinkedIn · X · Instagram</span>
           <small>© 2026 John quiz.com</small>
+          <small style={{ marginTop: "4px", color: "#98a2b3" }}>
+            Powered by <strong style={{ color: "#ffffff", fontWeight: 600 }}>LinvanX</strong>
+          </small>
         </div>
       </footer>
     </div>
@@ -1248,6 +1254,9 @@ function AdminShell({
           <Icon name="logout" />
           Log out
         </button>
+        <div style={{ padding: "14px 20px 8px", fontSize: "11px", color: "var(--muted, #667085)", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+          Powered by <strong style={{ color: "var(--text, #98a2b3)" }}>LinvanX</strong>
+        </div>
       </aside>
       <div className="admin-main">
         <header>
@@ -2609,7 +2618,7 @@ function Login() {
             {loading ? "Signing in..." : "Sign in securely"}
           </Button>
           <small>
-            <Icon name="shield" /> Protected by secure authentication
+            <Icon name="shield" /> Protected by secure authentication · Powered by LinvanX
           </small>
         </form>
       </div>
